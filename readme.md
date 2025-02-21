@@ -8,7 +8,7 @@
 5. License
 
 ## 1. Use Case Examples
-This project helps answer following acquisition/ retention-related questions:
+This project helps answer following acquisition/ retention-related questions for both VMs and vendors:
 
 ### 1.1 Acquisition (NTB)
 #### Example 1: old vs new customers make up; or how long it takes for a customer to make a return purchase
@@ -22,8 +22,19 @@ This project helps answer following acquisition/ retention-related questions:
 
 #### Example 4: how does that compare to peers in the same category?
 
+#### Example 5: how does CA Pets do overall in terms of NTB customer aquisition?
+
 ### 1.2 retention (beyond first purchases)
-    - how long does it take for a customer to make a return purchase?
+#### Example 1: how long does it take for a customer to make a return purchase?
+![plot](./graphs/acq_ret_asin.png)
+
+#### Example 2: How many 1-month return purchase orders over time?
+![plot](./graphs/company_acq_ret_time.png)
+
+#### Example 3: ASINs with top return purchases?
+![plot](./graphs/return_purchases.png)
+
+
 ### 1.3 HVE lift
   - how does my NTB % look like during an HVE vs benchmark normal period?
 
