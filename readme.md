@@ -14,7 +14,6 @@ This project helps answer following acquisition/ retention-related questions for
 #### Example 1: old vs new customers make up; or how long it takes for a customer to make a return purchase
 ![plot](./graphs/company_purchase_type.png)
 
-
 #### Example 2: Which ASIN/brand/company has the highest NTB % and sales during a marquee event or a given period?
 ![plot](./graphs/asin_ntb.png)
 
