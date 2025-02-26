@@ -31,8 +31,7 @@ CREATE TEMP TABLE orders_manu AS (
         ON o.region_id = m.region_id
         AND o.marketplace_id = m.marketplace_id
         AND o.asin = m.asin
-)
-;
+);
 
 
 DROP TABLE IF EXISTS order_metrics;
@@ -45,8 +44,8 @@ CREATE TEMP TABLE order_metrics AS (
         dama_mfg_vendor_name,
         brand_name,
         brand_code,
-        cp.is_sns,
-        cp.prime_member_type,
+        -- cp.is_sns,
+        -- cp.prime_member_type,
         cp.revenue_share_amt,
         cp.display_ads_amt,
         cp.subscription_revenue_amt
@@ -54,8 +53,7 @@ CREATE TEMP TABLE order_metrics AS (
         left join andes.contribution_ddl.O_WBR_CP_NA cp 
         ON o.marketplace_id = cp.marketplace_id
         AND o.asin = cp.asin
-)
-;
+);
 
 
 DROP TABLE IF EXISTS cte1;
@@ -65,12 +63,9 @@ CREATE TEMP TABLE cte1 AS (
         dama_mfg_vendor_name,
         brand_code,
         brand_name,
-        -- category
-        ASIN,
+        asin,
         customer_id,
         order_day,
-        is_sns,
-        prime_member_type,
         revenue_share_amt,
         display_ads_amt,
         subscription_revenue_amt,
@@ -78,24 +73,20 @@ CREATE TEMP TABLE cte1 AS (
         LAG(ASIN) OVER (PARTITION BY dama_mfg_vendor_code, customer_id ORDER BY order_day) AS last_purchase_asin
     FROM order_metrics
     WHERE dama_mfg_vendor_code != 'NaN'
-)
-;
+);
 
-DROP TABLE IF EXISTS cte2
-;
-
+DROP TABLE IF EXISTS cte2;
 CREATE TEMP TABLE cte2 AS (
     SELECT
-        ASIN,
+        asin,
         dama_mfg_vendor_code,
         dama_mfg_vendor_name,
         brand_code,
         brand_name,
         customer_id,
         order_day,
-        is_sns,
-        prime_member_type,
-        -- category
+        -- is_sns,
+        -- prime_member_type,
         revenue_share_amt,
         display_ads_amt,
         subscription_revenue_amt,
@@ -111,54 +102,43 @@ CREATE TEMP TABLE cte2 AS (
                 ELSE '/'
             END
         ) AS last_purchase_n_days_ago
-    FROM
-        cte1
-)
-;
-
+    FROM  cte1
+);
 
 DROP TABLE IF EXISTS CAISM.new_to_brand_job_test2;
-
 CREATE TABLE CAISM.new_to_brand_job_test2 AS (
     SELECT
-        ASIN,
+        asin,
         dama_mfg_vendor_code,
         dama_mfg_vendor_name,
         brand_name,
         brand_code,
         customer_id,
         order_day,
-        -- category
-        is_sns,
-        prime_member_type,
         last_purchase_asin,
         last_purchase_date,
         last_purchase_n_days_ago,
         COUNT(DISTINCT customer_id) AS unique_customer_ct,
         SUM(revenue_share_amt),
         SUM(display_ads_amt),
-        SUM(subscription_revenue_amt),
+        SUM(subscription_revenue_amt)
     FROM cte2
-    -- WHERE
-        -- last_purchase_date IS NULL
-        -- OR EXTRACT( day  FROM order_day ) - ( day FROM last_purchase_date  ) > 1
-    GROUP BY
+    GROUP BY 
         dama_mfg_vendor_code,
-        ASIN,
+        asin,
         last_purchase_n_days_ago,
         order_day,
         last_purchase_asin,
         last_purchase_date,
-        is_sns,
-        prime_member_type,
+        -- is_sns,
+        -- prime_member_type,
         brand_code,
         brand_name
         -- category
     ORDER BY
         dama_mfg_vendor_code,
-        ASIN,
+        asin,
         last_purchase_n_days_ago ASC
-)
-;
+);
 
 GRANT ALL ON TABLE caism.new_to_brand_job_test2 TO PUBLIC;
