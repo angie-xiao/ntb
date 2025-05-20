@@ -43,6 +43,7 @@ DROP TABLE IF EXISTS promotion_details;
 CREATE TEMP TABLE promotion_details AS (
     SELECT DISTINCT
         f.customer_shipment_item_id,
+        f.asin,
         p.promotion_key,
         TO_DATE(p.start_datetime, 'YYYY-MM-DD') as promo_start_date,
         TO_DATE(p.end_datetime, 'YYYY-MM-DD') as promo_end_date,
@@ -139,30 +140,40 @@ CREATE TEMP TABLE customer_history AS (
 
 
 /*
-Combine Orders with Promotions
+Combine Promo & Non-Promo Orders with Promotions Data
 */
 DROP TABLE IF EXISTS orders_with_promos;
 CREATE TEMP TABLE orders_with_promos AS (
+
+    WITH promo_dates AS (
+        SELECT DISTINCT
+            asin,
+            promo_start_date,
+            promo_end_date,
+            event_name
+        FROM promotion_details
+    )
+
     SELECT 
         b.*,
         p.promo_start_date,
         p.promo_end_date,
         p.event_name,
         CASE 
-            WHEN p.customer_shipment_item_id IS NOT NULL THEN 'Y'
+            WHEN b.order_date BETWEEN p.promo_start_date AND p.promo_end_date THEN 'Y'
             ELSE 'N'
         END as is_promotion,
         CASE
-            WHEN b.order_date BETWEEN p.promo_start_date AND p.promo_end_date 
-                THEN 'DEAL'
-            WHEN b.order_date BETWEEN p.promo_start_date - interval '28 days' 
-                AND p.promo_start_date - interval '14 days'
-                THEN 'PRE_DEAL'
+            WHEN p.promo_start_date > p.promo_end_date THEN 'INVALID_PROMO_DATES'
+            WHEN b.order_date BETWEEN p.promo_start_date AND p.promo_end_date THEN 'DEAL'
+            WHEN b.order_date BETWEEN p.promo_start_date - interval '28 days' AND p.promo_start_date - interval '14 days' THEN 'PRE_DEAL'
+            WHEN p.asin IS NULL THEN 'NOT_DEAL'
             ELSE 'OTHER'
         END as period_type
     FROM base_orders b
-        LEFT JOIN promotion_details p 
-        ON b.customer_shipment_item_id = p.customer_shipment_item_id
+        LEFT JOIN promo_dates p 
+            ON b.asin = p.asin
+            AND b.order_date BETWEEN p.promo_start_date - interval '28 days' AND p.promo_end_date
 );
 
 
@@ -180,7 +191,7 @@ CREATE TEMP TABLE promotion_analysis AS (
         o.promo_start_date,
         o.promo_end_date,
         o.order_date,
-        -- o.period_type,
+        o.period_type,
         SUM(o.shipped_units) as units,
         SUM(o.revenue_share_amt) as revenue,
         SUM(o.display_ads_amt) as display_ads,
@@ -196,6 +207,8 @@ CREATE TEMP TABLE promotion_analysis AS (
         ON o.customer_id = h.customer_id 
         AND o.brand_code = h.brand_code
         AND o.order_date = h.order_date
+    WHERE o.order_date BETWEEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - interval '385 days'
+        AND TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD')
     GROUP BY 
         o.asin,
         o.gl_product_group,
@@ -204,8 +217,8 @@ CREATE TEMP TABLE promotion_analysis AS (
         o.event_name,
         o.promo_start_date,
         o.promo_end_date,
-        o.order_date
-        -- o.period_type
+        o.order_date,
+        o.period_type
 );
 
 
@@ -214,34 +227,35 @@ Final Analysis
 */
 DROP TABLE IF EXISTS final_output;
 CREATE TEMP TABLE final_output AS (
-
+    
     WITH deal_periods AS (
         SELECT 
-            asin,
-            brand_code,
-            promo_start_date,
-            promo_end_date,
-            event_name,
-            DATEDIFF('day', promo_start_date, promo_end_date) + 1 as deal_duration_days,  -- Fixed duration calculation
-            -- Get deal metrics in the same CTE
-            SUM(CASE WHEN period_type = 'DEAL' THEN units ELSE 0 END) as deal_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue ELSE 0 END) as deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN new_to_brand_customers ELSE 0 END) as deal_new_to_brand,
-            SUM(CASE WHEN period_type = 'DEAL' THEN one_mo_return_customers ELSE 0 END) as deal_one_mo_return,
-            SUM(CASE WHEN period_type = 'DEAL' THEN two_mo_return_customers ELSE 0 END) as deal_two_mo_return,
-            SUM(CASE WHEN period_type = 'DEAL' THEN three_mo_return_customers ELSE 0 END) as deal_three_mo_return,
-            SUM(CASE WHEN period_type = 'DEAL' THEN three_plus_mo_return_customers ELSE 0 END) as deal_three_plus_mo_return
-        FROM promotion_analysis
-        WHERE period_type = 'DEAL'
-            AND promo_start_date >= TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - interval '385 days'
-            AND promo_start_date <= TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD')
+            p.asin,
+            p.gl_product_group,
+            p.brand_name,
+            p.brand_code,
+            p.promo_start_date,
+            p.promo_end_date,
+            p.event_name,
+            -- p.promo_end_date - p.promo_start_date + 1
+            DATEDIFF('day', p.promo_start_date, p.promo_end_date) + 1 as deal_duration_days,
+            SUM(CASE WHEN p.period_type = 'DEAL' THEN p.units ELSE 0 END) as deal_units,
+            SUM(CASE WHEN p.period_type = 'DEAL' THEN p.revenue ELSE 0 END) as deal_revenue,
+            SUM(CASE WHEN p.period_type = 'DEAL' THEN p.new_to_brand_customers ELSE 0 END) as deal_new_to_brand,
+            SUM(CASE WHEN p.period_type = 'DEAL' THEN p.one_mo_return_customers ELSE 0 END) as deal_one_mo_return,
+            SUM(CASE WHEN p.period_type = 'DEAL' THEN p.two_mo_return_customers ELSE 0 END) as deal_two_mo_return,
+            SUM(CASE WHEN p.period_type = 'DEAL' THEN p.three_mo_return_customers ELSE 0 END) as deal_three_mo_return,
+            SUM(CASE WHEN p.period_type = 'DEAL' THEN p.three_plus_mo_return_customers ELSE 0 END) as deal_three_plus_mo_return
+        FROM promotion_analysis p
+        WHERE p.period_type = 'DEAL'
         GROUP BY 
-            asin,
-            brand_code,
-            promo_start_date,
-            promo_end_date,
-            event_name
-            -- period_type
+            p.asin,
+            p.gl_product_group,
+            p.brand_name,
+            p.brand_code,
+            p.promo_start_date,
+            p.promo_end_date,
+            p.event_name
     ),
 
     pre_deal_metrics AS (
@@ -249,6 +263,7 @@ CREATE TEMP TABLE final_output AS (
             d.asin,
             d.brand_code,
             d.promo_start_date,
+            d.promo_end_date,  -- Add this line
             d.event_name,
             d.gl_product_group,
             d.brand_name,
@@ -282,6 +297,7 @@ CREATE TEMP TABLE final_output AS (
             d.asin,
             d.brand_code,
             d.promo_start_date,
+            d.promo_end_date,  -- Add this line
             d.event_name,
             d.gl_product_group,
             d.brand_name,
@@ -301,6 +317,7 @@ CREATE TEMP TABLE final_output AS (
         brand_name,
         event_name,
         promo_start_date,
+        promo_end_date,
         deal_duration_days,
         
         -- Deal metrics
