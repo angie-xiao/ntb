@@ -38,6 +38,7 @@ CREATE TEMP TABLE base_orders AS (
 /*
 Promotion Details
 - Classifies promotions into major event types
+https://w.amazon.com/bin/view/Canada_Marketing/Events/2025_Events/
 */
 DROP TABLE IF EXISTS promotion_details;
 CREATE TEMP TABLE promotion_details AS (
@@ -47,11 +48,12 @@ CREATE TEMP TABLE promotion_details AS (
         p.promotion_key,
         TO_DATE(p.start_datetime, 'YYYY-MM-DD') as promo_start_date,
         TO_DATE(p.end_datetime, 'YYYY-MM-DD') as promo_end_date,
+        p.promotion_internal_title,
         CASE 
             WHEN p.promotion_key IS NULL THEN 'NO_PROMOTION'
-            WHEN UPPER(p.promotion_internal_title) LIKE '%DAILY%ESSENTIAL%' 
-                OR UPPER(p.promotion_internal_title) LIKE '%DE%' THEN 'DAILY ESSENTIALS'
-            WHEN UPPER(p.promotion_internal_title) LIKE '%BSS%' THEN 'BSS'
+            WHEN UPPER(p.promotion_internal_title) LIKE '%NYNY%' THEN 'NYNY'
+            WHEN UPPER(p.promotion_internal_title) LIKE '%BSS%' 
+                OR UPPER(p.promotion_internal_title) LIKE '%BIG SPRING SALE%' THEN 'BSS'
             WHEN UPPER(p.promotion_internal_title) LIKE '%PET%DAY%' 
                 OR UPPER(p.promotion_internal_title) LIKE '%PET%MONTH%' THEN 'PET DAY'
             WHEN UPPER(p.promotion_internal_title) LIKE '%PBDD%' THEN 'PBDD'
@@ -67,8 +69,12 @@ CREATE TEMP TABLE promotion_details AS (
             WHEN UPPER(p.promotion_internal_title) LIKE '%HOLIDAY%' THEN 'HOLIDAY'
             WHEN UPPER(p.promotion_internal_title) LIKE '%BOXING WEEK%'
                 OR UPPER(p.promotion_internal_title) LIKE '%BOXING DAY%' THEN 'BOXING WEEK'
-            WHEN p.promotion_type = 'Sales Discount' THEN 'SALES DISCOUNT'
-            WHEN p.promotion_type = 'Coupon' THEN 'COUPON'
+            WHEN UPPER(p.promotion_internal_title) LIKE '%MOTHER%DAY%' 
+                OR UPPER(p.promotion_internal_title) LIKE '%MOTHER''S%DAY%' 
+                THEN 'MOTHER''S DAY'
+            WHEN UPPER(p.promotion_internal_title) LIKE '%VALENTINE%DAY%' 
+                OR UPPER(p.promotion_internal_title) LIKE '%VALENTINE''S%DAY%' 
+                THEN 'VALENTINE''S DAY'
             ELSE 'OTHER'
         END as event_name
     FROM andes.pdm.fact_promotion_cp f
@@ -77,6 +83,62 @@ CREATE TEMP TABLE promotion_details AS (
         AND p.marketplace_key = 7
     WHERE f.region_id = 1
         AND f.marketplace_key = 7
+        AND p.approval_status = 'Approved'
+        AND p.promotion_type NOT IN ('Coupon', 'Sales Discount')
+        AND UPPER(p.promotion_internal_title) NOT LIKE '%OIH%'
+);
+
+
+-- Create a consolidated promotions table to handle overlapping periods
+DROP TABLE IF EXISTS consolidated_promos;
+CREATE TEMP TABLE consolidated_promos AS (
+    WITH overlapping_periods AS (
+        SELECT 
+            asin,
+            event_name,
+            promotion_internal_title,
+            MIN(promo_start_date) as start_date,
+            MAX(promo_end_date) as end_date
+        FROM promotion_details
+        GROUP BY 
+            asin,
+            event_name,
+            promotion_internal_title
+    )
+    SELECT DISTINCT
+        asin,
+        event_name,
+        promotion_internal_title,
+        start_date as promo_start_date,
+        end_date as promo_end_date
+    FROM overlapping_periods
+);
+
+
+/*
+Combine Promo & Non-Promo Orders with Promotions Data
+*/
+DROP TABLE IF EXISTS orders_with_promos;
+CREATE TEMP TABLE orders_with_promos AS (
+    SELECT 
+        b.*,
+        p.promo_start_date,
+        p.promo_end_date,
+        p.event_name,
+        p.promotion_internal_title,
+        CASE 
+            WHEN b.order_date BETWEEN p.promo_start_date AND p.promo_end_date THEN 'Y'
+            ELSE 'N'
+        END as is_promotion,
+        CASE
+            WHEN b.order_date BETWEEN p.promo_start_date AND p.promo_end_date THEN 'DEAL'
+            WHEN b.order_date BETWEEN p.promo_start_date - interval '28 days' AND p.promo_start_date - interval '14 days' THEN 'PRE_DEAL'
+            ELSE 'NOT_DEAL'
+        END as period_type
+    FROM base_orders b
+        LEFT JOIN consolidated_promos p 
+        ON b.asin = p.asin
+        AND b.order_date BETWEEN p.promo_start_date - interval '28 days' AND p.promo_end_date
 );
 
 
@@ -140,75 +202,75 @@ CREATE TEMP TABLE customer_history AS (
 
 
 /*
-Combine Promo & Non-Promo Orders with Promotions Data
-*/
-DROP TABLE IF EXISTS orders_with_promos;
-CREATE TEMP TABLE orders_with_promos AS (
-
-    WITH promo_dates AS (
-        SELECT DISTINCT
-            asin,
-            promo_start_date,
-            promo_end_date,
-            event_name
-        FROM promotion_details
-    )
-
-    SELECT 
-        b.*,
-        p.promo_start_date,
-        p.promo_end_date,
-        p.event_name,
-        CASE 
-            WHEN b.order_date BETWEEN p.promo_start_date AND p.promo_end_date THEN 'Y'
-            ELSE 'N'
-        END as is_promotion,
-        CASE
-            WHEN p.promo_start_date > p.promo_end_date THEN 'INVALID_PROMO_DATES'
-            WHEN b.order_date BETWEEN p.promo_start_date AND p.promo_end_date THEN 'DEAL'
-            WHEN b.order_date BETWEEN p.promo_start_date - interval '28 days' AND p.promo_start_date - interval '14 days' THEN 'PRE_DEAL'
-            WHEN p.asin IS NULL THEN 'NOT_DEAL'
-            ELSE 'OTHER'
-        END as period_type
-    FROM base_orders b
-        LEFT JOIN promo_dates p 
-            ON b.asin = p.asin
-            AND b.order_date BETWEEN p.promo_start_date - interval '28 days' AND p.promo_end_date
-);
-
-
-/*
 Promotion Analysis
 */
 DROP TABLE IF EXISTS promotion_analysis;
 CREATE TEMP TABLE promotion_analysis AS (
+    WITH customer_purchase_sequence AS (
+        SELECT 
+            o.customer_id,
+            o.brand_code,
+            o.asin,
+            o.order_date,
+            o.promo_start_date,
+            o.promo_end_date,
+            o.event_name,
+            o.promotion_internal_title,
+            o.period_type,
+            ROW_NUMBER() OVER (
+                PARTITION BY o.customer_id, o.brand_code
+                ORDER BY o.order_date
+            ) as purchase_sequence,
+            LAG(o.order_date) OVER (
+                PARTITION BY o.customer_id, o.brand_code
+                ORDER BY o.order_date
+            ) as prev_purchase_date
+        FROM orders_with_promos o
+        WHERE o.promo_start_date BETWEEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - interval '365 days'
+            AND TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD')
+    )
     SELECT 
         o.asin,
         o.gl_product_group,
         o.brand_name,
         o.brand_code,
         o.event_name,
+        o.promotion_internal_title,
         o.promo_start_date,
         o.promo_end_date,
-        o.order_date,
         o.period_type,
+        o.order_date ,
         SUM(o.shipped_units) as units,
         SUM(o.revenue_share_amt) as revenue,
         SUM(o.display_ads_amt) as display_ads,
         SUM(o.subscription_revenue_amt) as subscription_revenue,
         COUNT(DISTINCT o.customer_id) as total_customers,
-        SUM(COALESCE(h.is_first_brand_purchase, 0)) as new_to_brand_customers,
-        SUM(COALESCE(h.is_one_month_return, 0)) as one_mo_return_customers,
-        SUM(COALESCE(h.is_two_month_return, 0)) as two_mo_return_customers,
-        SUM(COALESCE(h.is_three_month_return, 0)) as three_mo_return_customers,
-        SUM(COALESCE(h.is_three_plus_month_return, 0)) as three_plus_mo_return_customers
+        COUNT(DISTINCT CASE WHEN cps.purchase_sequence = 1 THEN o.customer_id END) as new_to_brand_customers,
+        COUNT(DISTINCT CASE 
+            WHEN cps.prev_purchase_date IS NOT NULL 
+            AND o.order_date - cps.prev_purchase_date <= interval '30 days' 
+            THEN o.customer_id 
+        END) as one_mo_return_customers,
+        COUNT(DISTINCT CASE 
+            WHEN cps.prev_purchase_date IS NOT NULL 
+            AND o.order_date - cps.prev_purchase_date BETWEEN interval '31 days' AND interval '60 days' 
+            THEN o.customer_id 
+        END) as two_mo_return_customers,
+        COUNT(DISTINCT CASE 
+            WHEN cps.prev_purchase_date IS NOT NULL 
+            AND o.order_date - cps.prev_purchase_date BETWEEN interval '61 days' AND interval '90 days' 
+            THEN o.customer_id 
+        END) as three_mo_return_customers,
+        COUNT(DISTINCT CASE 
+            WHEN cps.prev_purchase_date IS NOT NULL 
+            AND o.order_date - cps.prev_purchase_date > interval '90 days' 
+            THEN o.customer_id 
+        END) as three_plus_mo_return_customers
     FROM orders_with_promos o
-        LEFT JOIN customer_history h
-        ON o.customer_id = h.customer_id 
-        AND o.brand_code = h.brand_code
-        AND o.order_date = h.order_date
-    WHERE o.order_date BETWEEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - interval '385 days'
-        AND TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD')
+        LEFT JOIN customer_purchase_sequence cps
+        ON o.customer_id = cps.customer_id 
+        AND o.brand_code = cps.brand_code
+        AND o.order_date = cps.order_date
     GROUP BY 
         o.asin,
         o.gl_product_group,
@@ -217,8 +279,9 @@ CREATE TEMP TABLE promotion_analysis AS (
         o.event_name,
         o.promo_start_date,
         o.promo_end_date,
+        o.period_type,
         o.order_date,
-        o.period_type
+        o.promotion_internal_title
 );
 
 
@@ -237,8 +300,12 @@ CREATE TEMP TABLE final_output AS (
             p.promo_start_date,
             p.promo_end_date,
             p.event_name,
-            -- p.promo_end_date - p.promo_start_date + 1
-            DATEDIFF('day', p.promo_start_date, p.promo_end_date) + 1 as deal_duration_days,
+            p.promotion_internal_title,
+            CASE
+                WHEN p.promo_end_date > CURRENT_DATE 
+                THEN DATEDIFF('day', p.promo_start_date, CURRENT_DATE) + 1
+                ELSE DATEDIFF('day', p.promo_start_date, p.promo_end_date) + 1
+            END as deal_duration_days,
             SUM(CASE WHEN p.period_type = 'DEAL' THEN p.units ELSE 0 END) as deal_units,
             SUM(CASE WHEN p.period_type = 'DEAL' THEN p.revenue ELSE 0 END) as deal_revenue,
             SUM(CASE WHEN p.period_type = 'DEAL' THEN p.new_to_brand_customers ELSE 0 END) as deal_new_to_brand,
@@ -255,7 +322,8 @@ CREATE TEMP TABLE final_output AS (
             p.brand_code,
             p.promo_start_date,
             p.promo_end_date,
-            p.event_name
+            p.event_name,
+            p.promotion_internal_title
     ),
 
     pre_deal_metrics AS (
@@ -263,7 +331,8 @@ CREATE TEMP TABLE final_output AS (
             d.asin,
             d.brand_code,
             d.promo_start_date,
-            d.promo_end_date,  -- Add this line
+            d.promo_end_date,  
+            d.promotion_internal_title,
             d.event_name,
             d.gl_product_group,
             d.brand_name,
@@ -299,6 +368,7 @@ CREATE TEMP TABLE final_output AS (
             d.promo_start_date,
             d.promo_end_date,  -- Add this line
             d.event_name,
+            d.promotion_internal_title,
             d.gl_product_group,
             d.brand_name,
             d.deal_duration_days,
@@ -316,6 +386,7 @@ CREATE TEMP TABLE final_output AS (
         gl_product_group,
         brand_name,
         event_name,
+        promotion_internal_title,
         promo_start_date,
         promo_end_date,
         deal_duration_days,
