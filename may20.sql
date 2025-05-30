@@ -27,6 +27,43 @@ CREATE TEMP TABLE base_orders AS (
             ON o.customer_shipment_item_id = cp.customer_shipment_item_id 
             AND o.asin = cp.asin
     WHERE o.region_id = 1
+        AND o.asin in (
+    'B000255QWA','B0002563QI','B0002563RW','B00025640S','B0002565NY','B0002565PW','B0002565Q6','B0002565RA','B0002565SY','B0002565TI',
+    'B0002566WE','B0002566WO','B0002566YM','B00025K10C','B00025Z6SO','B0002APMEC','B0002DHY6S','B0002DHZIU','B0002DHZKS','B0002DHZSU',
+    'B0002DIFIE','B0002DJOV6','B0006JM09E','B0006JM09O','B0009YD6XA','B0009YHSAC','B0009YHSE8','B000HHLHDK','B000HHLKRI','B000ICNM96',
+    'B000IWXHMI','B000J3I0Q4','B000N31TYU','B000NIG7R4','B000NRS31S','B000NRVLIU','B000NRXB5G','B000OQM7J2','B000OQO69Q','B000OQRLHK',
+    'B000OQRLL6','B000V7KM32','B001CHSJZS','B001CHXJSK','B001CJC8X0','B001D73ZWY','B001DCZUO0','B001KN959I','B001LISOLM','B001LUHBDC',
+    'B001LUOBNU','B001MSS358','B001RE9ZTK','B001XRSR1S','B001XRXVPU','B0024EFYU6','B0024EFZAA','B002DVTDRU','B002DVVICI','B002MW6CXS',
+    'B002MW9YU6','B002RB752G','B002RBAT24','B002RBCT0O','B002RBEGC8','B002TQOFQS','B003907Q96','B003AYX474','B003JVR1J0','B003JVYY7M',
+    'B003SNCEZU','B003WRHRQS','B00474FI84','B00474FPZU','B00474FQJ0','B004N1NAMW','B004PB8SMM','B004PB8UF2','B004PB93AI','B004PBCS82',
+    'B004QDA8HW','B004QDBAUQ','B004YK5HAK','B004ZR9TDI','B0053PR7P8','B005FTW6Z8','B0062Z0S3G','B0062Z0UOI','B0062Z0UVG','B006L49H30',
+    'B006WC01O0','B006WC1F0E','B007HVNKEI','B007R5KN80','B007TGMIG2','B007TGMJXE','B007TGMLU0','B007TGMLVO','B007TGMLW8','B007TGMLXM',
+    'B007TU2Y0I','B009II9YSO','B00A0MSPLY','B00BQ3GXY2','B00BS95YLM','B00BUFSKYW','B00CQ7JRAY','B00DCVPKWM','B00DCVPL4E','B00DCVPLFS',
+    'B00DS3603C','B00FJ04AZW','B00FJ04B0Q','B00FJ04B10','B00FJ04BO2','B00FJ04BOW','B00FJ04CH8','B00FJ04CHS','B00FJ04CIM','B00FJ04CJQ',
+    'B00GOFSB6U','B00GUG1AKW','B00IK5S0RC','B00J4BMCOS','B00JGSM0VE','B00JIAL34A','B00JN9I1KA','B00KKKJ7EA','B00KVL58KA','B00KVL5DU0',
+    'B00M4Q2F92','B00M4Q69J4','B00NETRY1W','B00NETRZIO','B00OYHF7RQ','B00TF1EF3I','B00ZWHBA4Q','B00ZWHBMVM','B00ZWHBMYY','B00ZWHCQH6',
+    'B00ZWHCQK8','B00ZWHE8EK','B00ZWHEDA4','B010PLGHGE','B010PLGI5O','B01C8PH0OI','B01C8PH3JU','B01KBV4TL8','B01N0AFPGY','B06VXQQKRG',
+    'B06W2PNFCM','B071GQVTSZ','B0721Q1NSK','B072KKF846','B072KKF8S5','B072N56ZYX','B072N571KJ','B072R4T783','B0744RP9CY','B0749KHF58',
+    'B0749LRR8P','B075MKTGJM','B075YDYCBN','B0793PT78B','B07BJ93VT7','B07BJ977FH','B07BJ9GTLQ','B07BJ9GX4J','B07BJ9TPS8','B07DF32PG6',
+    'B07DG7RZVC','B07DPX6FB9','B07DQ4WWKB','B07DQ5472S','B07FTPRZZL','B07FTQSK84','B07FTZGJ5P','B07G4KCPVM','B07G5FZ7R1','B07G5FZ7R6',
+    'B07G5GJHMS','B07G5S5MLK','B07G5S74R2','B07G5SBQZQ','B07G5SBQZT','B07G5WVF2Z','B07G5WZRM9','B07G5X4FQ6','B07G5Y75VG','B07G5Y9DHC',
+    'B07G7GRM2M','B07GLJWHRV','B07JC6LST2','B07JL29W5W','B07JM9JTMR','B07JMGK48T','B07JXJKHHF','B07JXJQXPT','B07JXJSGTT','B07JXJXS5D',
+    'B07L24R5K4','B07L25PZK8','B07L25S7GJ','B07MNGB19P','B07MNGL2X2','B07MZBX5ZW','B07MZBZT5D','B07MZCY821','B07MZD13SR','B07MZD3ZVF',
+    'B07MZD93QQ','B07MZDGF5M','B07MZDTG76','B07MZDTHPV','B07NGM3QRN','B07NV5C3PF','B07P29YJ23','B07P3FPFNL','B07P3FQ1W5','B07PK5ZCZ6',
+    'B07RGSWB4C','B07RR1GGD1','B07RWDR955','B07RWVM64F','B07WXQKF1X','B07YXHVWRZ','B081W2M14X','B086G787XZ','B086G8632M','B086GBV9HY',
+    'B086GBV9J4','B086GQB4W3','B086QGMXWT','B087DP8TGR','B087DQ5WWR','B087DQ65ZY','B08BJ9FQY7','B08BJB7FX4','B08BJBYB4S','B08BMG5Y7Z',
+    'B08BMHBNQB','B08BMK1P73','B08BMK42HJ','B08BMM6R1Z','B08BMP99SC','B08BMQZNYN','B08BMRRSRW','B08BMV48SF','B08BMW1RC1','B08LF1128L',
+    'B08R6L3PRF','B08W9Q28V2','B091D34GW1','B091D3DTWS','B091D45L3R','B091D46799','B091D4WZW5','B091D5DZVB','B091D6SN4S','B09B49SKQX',
+    'B09B4BBLVJ','B09B4BP37B','B09B4C3LBZ','B09B4C6PQW','B09B4C9XG3','B09B4CQBR8','B09B4CTTCV','B09B4CZVFK','B09B4D3PC1','B09B4DW3VY',
+    'B09B4FHWXW','B09B4QHGD9','B09CG1QQK5','B09FMZWMYB','B09KQVCC67','B09RGRXR7T','B09Y2HNMMF','B09Y2JMSRH','B09Y7M25BT','B09Z78XZZL',
+    'B09Z7B3TQ2','B0B29D333C','B0B29G9DLG','B0B2Q48WC5','B0B2Q58Q7S','B0B2S9LPHL','B0B2SB6XRQ','B0B2SBKNJT','B0B2SCCM4L','B0B2SCXTLM',
+    'B0B2SD1HJB','B0B2Y7BKWJ','B0B33B944N','B0B33HG7F7','B0B33JRR3N','B0B33PKP3B','B0B33YXBWH','B0B6CQLD4G','B0B6CV95NF','B0BBSHCF7G',
+    'B0BFXGDDHY','B0BFXJ16SC','B0BFXJHMNG','B0BFXJQD24','B0BG36PLBL','B0BG379894','B0BG37CTVY','B0BG39TL34','B0BLHGQ3CC','B0BLHGVDNC',
+    'B0BSXV1KP4','B0BT26D22Z','B0BT26S15N','B0BTTGP6JF','B0BVVL6R1C','B0C3DH37FB','B0C3DHM86P','B0CCB4XW1M','B0CCB6GSGX','B0CDM5X8SG',
+    'B0CG2D8TXS','B0CNWGX93J','B0CNWHTWXX','B0CNWJJFRD','B0CSG5S2SS','B0CSS9QXP8','B0CVLK2KSP','B0CVLWWB7P','B0CVQSHR6Q','B0CYT8B59L',
+    'B0D1MSN4QJ','B0D1MSQQSZ','B0D1MSVLH9','B0D1MSW3G2','B0D1MVGQ1R','B0D1MWYJNM','B0D1MX4GRR','B0D1MYMJCX','B0D1N6HBWB','B0DVPSKMJ9',
+    'B0DVPWMHC5'
+    )
         AND o.marketplace_id = 7
         AND o.shipped_units > 0
         AND o.is_retail_merchant = 'Y'
@@ -158,10 +195,8 @@ CREATE TEMP TABLE consolidated_promos AS (
 
 
 /*************************
-Combine Promo & Non-Promo Orders with Promotions Data
-Split into two tables to avoid UNION ALL overhead
+Deal period orders
 *************************/
--- Deal period orders
 DROP TABLE IF EXISTS deal_orders;
 CREATE TEMP TABLE deal_orders AS (
     SELECT 
@@ -171,6 +206,11 @@ CREATE TEMP TABLE deal_orders AS (
         p.event_name,
         p.event_year,
         p.event_month,
+        (CASE 
+            WHEN p.promo_end_date >= TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') 
+                THEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - p.promo_start_date + 1
+            ELSE p.promo_end_date - p.promo_start_date + 1
+        END) as event_duration_days,
         'DEAL' as period_type,
         'Y' as is_promotion
     FROM base_orders b
@@ -181,31 +221,43 @@ CREATE TEMP TABLE deal_orders AS (
 );
 
 
--- Pre-deal period orders
+/*************************
+Create pre-deal date ranges
+*************************/
+DROP TABLE IF EXISTS pre_deal_date_ranges;
+CREATE TEMP TABLE pre_deal_date_ranges AS (
+    SELECT 
+        asin,
+        promo_start_date,
+        promo_end_date,
+        event_name,
+        event_year,
+        event_month,
+        promo_start_date - interval '27 days' AS pre_deal_start_date,
+        promo_start_date - interval '14 days' AS pre_deal_end_date
+    FROM consolidated_promos
+);
+
+
+/*************************
+Pre-Deal period orders with clean joins
+*************************/
 DROP TABLE IF EXISTS pre_deal_orders;
 CREATE TEMP TABLE pre_deal_orders AS (
-    SELECT 
+    SELECT DISTINCT
         b.*,
-        p.promo_start_date,
-        p.promo_end_date,
-        p.event_name,
-        p.event_year,
-        p.event_month,
+        pdr.promo_start_date,
+        pdr.promo_end_date,
+        pdr.event_name,
+        pdr.event_year,
+        pdr.event_month,
         'PRE_DEAL' as period_type,
         'N' as is_promotion
     FROM base_orders b
-        INNER JOIN consolidated_promos p 
-        ON b.asin = p.asin
-        -- Add event context to join
-        AND b.order_date BETWEEN p.promo_start_date - interval '28 days' 
-            AND p.promo_start_date - interval '14 days'
-        -- Ensure no overlap with other events
-        -- AND NOT EXISTS (
-        --     SELECT 1 
-        --     FROM consolidated_promos p2 
-        --     WHERE p2.asin = b.asin
-        --     AND b.order_date BETWEEN p2.promo_start_date AND p2.promo_end_date
-        -- )
+        INNER JOIN pre_deal_date_ranges pdr
+        ON b.asin = pdr.asin
+    WHERE b.order_date BETWEEN pdr.pre_deal_start_date 
+        AND pdr.pre_deal_end_date
 );
 
 
@@ -241,6 +293,7 @@ CREATE TEMP TABLE deal_daily_summary AS (
         o.event_name,
         o.promo_start_date,
         o.promo_end_date,
+        o.event_duration_days,
         o.period_type,
         o.order_date,
         o.customer_id,
@@ -285,7 +338,7 @@ CREATE TEMP TABLE pre_deal_daily_summary AS (
 
 
 /*************************
-Deal metrics calculation
+Deal metrics calculation (daily avg)
 *************************/
 DROP TABLE IF EXISTS deal_metrics;
 CREATE TEMP TABLE deal_metrics AS (
@@ -305,6 +358,7 @@ CREATE TEMP TABLE deal_metrics AS (
                     THEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - promo_start_date + 1
                 ELSE promo_end_date - promo_start_date + 1
             END as event_duration_days,
+            -- total
             SUM(shipped_units) as shipped_units,
             SUM(revenue_share_amt) as revenue,
             COUNT(DISTINCT customer_id) as total_customers,
@@ -317,13 +371,14 @@ CREATE TEMP TABLE deal_metrics AS (
     SELECT 
         bm.*,
         mam.dama_mfg_vendor_code as vendor_code,
-        shipped_units as deal_shipped_units,
-        revenue as deal_ops,
-        total_customers as deal_total_customers,
-        new_customers as deal_new_customers,
-        return_customers as deal_return_customers
+        -- daily
+        shipped_units/event_duration_days as daily_deal_shipped_units,
+        revenue/event_duration_days as daily_deal_ops,
+        total_customers/event_duration_days as daily_deal_total_customers,
+        new_customers/event_duration_days as daily_deal_new_customers,
+        return_customers/event_duration_days as daily_deal_return_customers
     FROM base_metrics bm
-    LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam
+        LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam
         ON mam.asin = bm.asin
         AND mam.marketplace_id = 7
         AND mam.region_id = 1
@@ -337,23 +392,24 @@ DROP TABLE IF EXISTS pre_deal_metrics;
 CREATE TEMP TABLE pre_deal_metrics AS (
     SELECT 
         asin,
-        event_name,  -- Add event context
-        promo_start_date,  -- Add event context
-        SUM(shipped_units) as pre_deal_shipped_units,
-        SUM(revenue_share_amt) as pre_deal_revenue,
-        COUNT(DISTINCT customer_id) as pre_deal_total_customers,
-        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 1 THEN customer_id END) as pre_deal_new_customers,
-        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END) as pre_deal_return_customers
+        event_name,
+        promo_start_date,
+        -- order_date,
+        SUM(shipped_units)/14 as daily_pre_deal_shipped_units,  
+        SUM(revenue_share_amt)/14 as daily_pre_deal_revenue,    
+        COUNT(DISTINCT customer_id)/14 as daily_pre_deal_total_customers,  
+        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 1 THEN customer_id END)/14 as daily_pre_deal_new_customers, 
+        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END)/14 as daily_pre_deal_return_customers
     FROM pre_deal_daily_summary
-    GROUP BY 1,2,3  -- Group by event context
+    GROUP BY 1,2,3
 );
 
 
 /*************************
-Final table creation - Update join conditions
+Final table creation
 *************************/
-DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_asin_may28;
-CREATE TABLE pm_sandbox_aqxiao.ntb_asin_may28 AS (
+DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_asin_may29;
+CREATE TABLE pm_sandbox_aqxiao.ntb_asin_may29 AS (
     SELECT 
         d.asin,
         CASE 
@@ -376,173 +432,47 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin_may28 AS (
         d.event_year,
         d.event_duration_days,
         
-        -- Deal metrics
-        d.deal_shipped_units,
-        d.deal_ops,
-        d.deal_total_customers,
-        d.deal_new_customers,
-        d.deal_return_customers,
+        -- Daily averages for comparison
+        d.daily_deal_shipped_units as daily_deal_shipped_units,
+        d.daily_deal_ops as daily_deal_ops,
+        d.daily_deal_total_customers as daily_deal_total_customers,
+        d.daily_deal_new_customers as daily_deal_new_customers,
+        d.daily_deal_return_customers as daily_deal_return_customers,
         
-        -- Pre-deal metrics
-        COALESCE(p.pre_deal_shipped_units, 0) as pre_deal_shipped_units,
-        COALESCE(p.pre_deal_revenue, 0) as pre_deal_revenue,
-        COALESCE(p.pre_deal_total_customers, 0) as pre_deal_total_customers,
-        COALESCE(p.pre_deal_new_customers, 0) as pre_deal_new_customers,
-        COALESCE(p.pre_deal_return_customers, 0) as pre_deal_return_customers,
+        p.daily_pre_deal_shipped_units as daily_pre_deal_shipped_units,
+        p.daily_pre_deal_revenue as daily_pre_deal_revenue,
+        p.daily_pre_deal_total_customers as daily_pre_deal_total_customers,
+        p.daily_pre_deal_new_customers as daily_pre_deal_new_customers,
+        p.daily_pre_deal_return_customers as daily_pre_deal_return_customers,
 
-        -- Growth calculations
+        -- Growth calculations (comparing daily averages)
         ROUND(
             CASE 
-                WHEN COALESCE(p.pre_deal_new_customers, 0) = 0 THEN 0
-                ELSE ((d.deal_new_customers::FLOAT / p.pre_deal_new_customers) - 1) * 100
+                WHEN COALESCE(p.daily_pre_deal_new_customers, 0) = 0 
+                THEN  ((d.daily_deal_new_customers::FLOAT / 0.000000001) - 1) * 100
+                ELSE ((d.daily_deal_new_customers::FLOAT / p.daily_pre_deal_new_customers) - 1) * 100
             END, 
             2
-        ) as deal_new_customer_growth_pct,
+        ) as daily_new_customer_growth_pct,
         
         ROUND(
             CASE 
-                WHEN COALESCE(p.pre_deal_return_customers, 0) = 0 THEN 0
-                ELSE ((d.deal_return_customers::FLOAT / p.pre_deal_return_customers) - 1) * 100
+                WHEN COALESCE(p.daily_pre_deal_return_customers, 0) = 0 
+                THEN ((d.daily_deal_return_customers::FLOAT / 0.000000001) - 1) * 100
+                ELSE ((d.daily_deal_return_customers::FLOAT / p.daily_pre_deal_return_customers) - 1) * 100
             END,
             2
-        ) as deal_return_customer_growth_pct
+        ) as daily_return_customer_growth_pct
     FROM deal_metrics d
-    LEFT JOIN pre_deal_metrics p
+        LEFT JOIN pre_deal_metrics p
         ON d.asin = p.asin
-        AND d.event_name = p.event_name  -- Add event context
-        AND d.promo_start_date = p.promo_start_date  -- Add event context
+        AND d.event_name = p.event_name
+        AND d.promo_start_date = p.promo_start_date
     WHERE d.promo_start_date IS NOT NULL
     ORDER BY 
         d.promo_start_date DESC,
-        d.deal_ops DESC
+        d.daily_deal_ops * d.event_duration_days DESC
 );
-
-
-
-/*************************
-Deal metrics (per deal per asin)
-*************************/
--- DROP TABLE IF EXISTS deal_metrics;
--- CREATE TEMP TABLE deal_metrics AS (
---     SELECT 
---         cs.asin,
---         b.gl_product_group,
---         mam.dama_mfg_vendor_code as vendor_code,
---         cs.brand_code,
---         b.brand_name,
---         cs.event_name,
---         cs.promo_start_date,
---         cs.promo_end_date,
---         DATE_PART('month', cs.promo_start_date) as event_month,
---         DATE_PART('year', cs.promo_start_date) as event_year,
---         CASE 
---             WHEN cs.promo_end_date >= TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') 
---                 THEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - cs.promo_start_date + 1
---             ELSE cs.promo_end_date - cs.promo_start_date + 1
---         END as event_duration_days,
---         SUM(cs.shipped_units) as deal_shipped_units,
---         SUM(cs.revenue_share_amt) as deal_ops,
---         COUNT(DISTINCT cs.customer_id) as deal_total_customers,
---         COUNT(DISTINCT CASE WHEN cs.is_first_brand_purchase = 1 THEN cs.customer_id END) as deal_new_customers,
---         COUNT(DISTINCT CASE WHEN cs.is_first_brand_purchase = 0 THEN cs.customer_id END) as deal_return_customers
---     FROM customer_daily_summary cs
---         INNER JOIN base_orders b 
---             ON cs.asin = b.asin 
---             AND cs.brand_code = b.brand_code
---         LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam
---             ON mam.asin = cs.asin
---             AND mam.marketplace_id = 7
---             AND mam.region_id = 1
---     WHERE cs.period_type = 'DEAL'
---     GROUP BY 1,2,3,4,5,6,7,8,9,10,11
--- );
-
-
--- /*************************
--- Pre-deal metrics (per deal per asin)
--- *************************/
--- DROP TABLE IF EXISTS pre_deal_metrics;
--- CREATE TEMP TABLE pre_deal_metrics AS (
---     SELECT 
---         cs.asin,
---         SUM(cs.shipped_units) as pre_deal_shipped_units,
---         SUM(cs.revenue_share_amt) as pre_deal_revenue,
---         COUNT(DISTINCT cs.customer_id) as pre_deal_total_customers,
---         COUNT(DISTINCT CASE WHEN cs.is_first_brand_purchase = 1 THEN cs.customer_id END) as pre_deal_new_customers,
---         COUNT(DISTINCT CASE WHEN cs.is_first_brand_purchase = 0 THEN cs.customer_id END) as pre_deal_return_customers
---     FROM customer_daily_summary cs
---     WHERE cs.period_type = 'PRE_DEAL'
---     GROUP BY 1
--- );
-
-
--- /*************************
--- Final table creation
--- *************************/
--- DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_asin;
--- CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
---     SELECT 
---         d.asin,
---         CASE 
---             WHEN d.gl_product_group = 510 THEN 'Lux Beauty'
---             WHEN d.gl_product_group = 364 THEN 'Personal Care Appliances'    
---             WHEN d.gl_product_group = 325 THEN 'Grocery'
---             WHEN d.gl_product_group = 199 THEN 'Pet'
---             WHEN d.gl_product_group = 194 THEN 'Beauty'
---             WHEN d.gl_product_group = 121 THEN 'HPC'
---             WHEN d.gl_product_group = 75 THEN 'Baby'    
---         END as gl_product_group_name,
---         d.gl_product_group,
---         d.vendor_code,
---         d.brand_code,
---         d.brand_name,
---         d.event_name,
---         d.promo_start_date,
---         d.promo_end_date,
---         d.event_month,
---         d.event_year,
---         d.event_duration_days,
-        
---         -- Deal metrics
---         d.deal_shipped_units,
---         d.deal_ops,
---         d.deal_total_customers,
---         d.deal_new_customers,
---         d.deal_return_customers,
-        
---         -- Pre-deal metrics
---         COALESCE(p.pre_deal_shipped_units, 0) as pre_deal_shipped_units,
---         COALESCE(p.pre_deal_revenue, 0) as pre_deal_revenue,
---         COALESCE(p.pre_deal_total_customers, 0) as pre_deal_total_customers,
---         COALESCE(p.pre_deal_new_customers, 0) as pre_deal_new_customers,
---         COALESCE(p.pre_deal_return_customers, 0) as pre_deal_return_customers,
-
---         -- Growth calculations
---         ROUND(
---             CASE 
---                 WHEN COALESCE(p.pre_deal_new_customers, 0) = 0 THEN 0
---                 ELSE ((d.deal_new_customers::FLOAT / p.pre_deal_new_customers) - 1) * 100
---             END, 
---             2
---         ) as deal_new_customer_growth_pct,
-        
---         ROUND(
---             CASE 
---                 WHEN COALESCE(p.pre_deal_return_customers, 0) = 0 THEN 0
---                 ELSE ((d.deal_return_customers::FLOAT / p.pre_deal_return_customers) - 1) * 100
---             END,
---             2
---         ) as deal_return_customer_growth_pct
---     FROM deal_metrics d
---         LEFT JOIN pre_deal_metrics p
---         ON d.asin = p.asin
---     WHERE d.promo_start_date IS NOT NULL
---     ORDER BY 
---         d.promo_start_date DESC,
---         d.deal_ops DESC
--- );
-
-    
 
 
 -- to be audited
