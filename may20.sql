@@ -202,8 +202,8 @@ CREATE TEMP TABLE pre_deal_date_ranges AS (
         event_name,
         event_year,
         event_month,
-        promo_start_date - interval '1 day' AS pre_deal_start_date,
-        promo_start_date - interval '91 day' AS pre_deal_end_date -- T13W
+        promo_start_date - interval '91 day' AS pre_deal_start_date,
+        promo_start_date - interval '1 day' AS pre_deal_end_date -- T13W
     FROM consolidated_promos
 );
 
@@ -225,8 +225,8 @@ CREATE TEMP TABLE pre_deal_orders AS (
     FROM base_orders b
         INNER JOIN pre_deal_date_ranges pdr
         ON b.asin = pdr.asin
-    WHERE b.order_date >= pdr.pre_deal_start_date 
-        AND b.order_date <= pdr.pre_deal_end_date
+    WHERE b.order_date BETWEEN pdr.pre_deal_start_date AND pdr.pre_deal_end_date
+
 );
 
 
@@ -268,10 +268,10 @@ CREATE TEMP TABLE deal_daily_summary AS (
         o.period_type,
         o.order_date,
         o.customer_id,
-        CASE 
+        (CASE 
             WHEN o.order_date = fp.first_purchase_date THEN 1 
             ELSE 0 
-        END AS is_first_brand_purchase,
+        END) AS is_first_brand_purchase,
         o.shipped_units,
         o.revenue_share_amt,
         o.display_ads_amt,
@@ -406,7 +406,6 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
             WHEN d.gl_product_group = 121 THEN 'HPC'
             WHEN d.gl_product_group = 75 THEN 'Baby'    
         END as gl_product_group_name,
-        -- d.gl_product_group,
         d.vendor_code,
         v.company_name,
         v.company_code, 
