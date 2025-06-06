@@ -1,3 +1,6 @@
+--+ merchant_sku in booker.d_mp_merchant_sku_asin_map
+
+
 /*************************
 Base Orders Query
 - Gets order data for consumables categories
@@ -57,7 +60,8 @@ CREATE TEMP TABLE promotion_details AS (
             WHEN UPPER(p.promotion_internal_title) LIKE '%BSS%' 
                 OR UPPER(p.promotion_internal_title) LIKE '%BIG SPRING SALE%' THEN 'BSS'
             WHEN UPPER(p.promotion_internal_title) LIKE '%PRIME%DAY%'
-                OR UPPER(p.promotion_internal_title) LIKE '%PD%' THEN 'PRIME DAY'
+                OR UPPER(p.promotion_internal_title) LIKE '%PD%' 
+                OR UPPER(p.promotion_internal_title) LIKE '%PEBD%' THEN 'PRIME DAY'
             WHEN UPPER(p.promotion_internal_title) LIKE '%PBDD%' THEN 'PBDD'
             WHEN UPPER(p.promotion_internal_title) LIKE '%BF%'
                 OR UPPER(p.promotion_internal_title) LIKE '%BLACK%FRIDAY%' THEN 'BLACK FRIDAY'
@@ -388,6 +392,33 @@ CREATE TEMP TABLE pre_deal_metrics AS (
 );
 
 
+/*************************
+SnS subscriber data
+*************************/
+DROP TABLE IF EXISTS sns_metrics;
+CREATE TEMP TABLE sns_metrics AS (
+    SELECT 
+        sns.asin,
+        p.promo_start_date,
+        p.event_name,
+        AVG(CASE 
+            WHEN TO_DATE(snapshot_date, 'YYYY-MM-DD') BETWEEN promo_start_date AND promo_end_date 
+            THEN active_subscription_count 
+        END) as avg_deal_sns_subscribers,
+        AVG(CASE 
+            WHEN TO_DATE(snapshot_date, 'YYYY-MM-DD') BETWEEN promo_start_date - interval '91 day' AND promo_start_date - interval '1 day'
+            THEN active_subscription_count 
+        END) as avg_pre_deal_sns_subscribers
+    FROM andes.subs_save_ddl.d_daily_active_sns_asin_detail sns
+        INNER JOIN consolidated_promos p
+        ON sns.asin = p.asin
+    WHERE sns.marketplace_id = 7
+        AND sns.gl_product_group in (510, 364, 325, 199, 194, 121, 75)
+    GROUP BY 1,2,3
+);
+
+
+
 -- + booker.D_ASINS_MARKETPLACE_ATTRIBUTES.product_type (PL)
 /*************************
 Final table creation
@@ -418,7 +449,7 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
         d.event_year,
         d.event_duration_days,
         
-        -- Daily averages for comparison
+        -- during deal daily avg
         d.daily_deal_shipped_units as daily_deal_shipped_units,
         d.daily_deal_ops as daily_deal_ops,    
         d.daily_deal_display_ads_amt,
@@ -426,7 +457,9 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
         d.daily_deal_total_customers as daily_deal_total_customers,
         d.daily_deal_new_customers as daily_deal_new_customers,
         d.daily_deal_return_customers as daily_deal_return_customers,
-        
+        s.avg_deal_sns_subscribers as daily_deal_sns_subscribers,
+
+        -- pre deal daily avg
         p.daily_pre_deal_shipped_units as daily_pre_deal_shipped_units,
         p.daily_pre_deal_revenue as daily_pre_deal_revenue,
         p.daily_pre_deal_display_ads_amt as daily_pre_deal_display_ads_amt,
@@ -434,6 +467,7 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
         p.daily_pre_deal_total_customers as daily_pre_deal_total_customers,
         p.daily_pre_deal_new_customers as daily_pre_deal_new_customers,
         p.daily_pre_deal_return_customers as daily_pre_deal_return_customers,
+        s.avg_pre_deal_sns_subscribers as daily_pre_deal_sns_subscribers,
 
         -- Growth calculations (comparing daily averages)
         ROUND(
@@ -452,21 +486,34 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
                 ELSE ((d.daily_deal_return_customers::FLOAT / p.daily_pre_deal_return_customers) - 1)
             END,
             2
-        ) as daily_return_customer_growth_pct
+        ) as daily_return_customer_growth_pct,
+        
+        ROUND(
+            CASE 
+                WHEN COALESCE(s.avg_pre_deal_sns_subscribers, 0) = 0 
+                THEN ((s.avg_deal_sns_subscribers::FLOAT / 0.000000001) - 1)
+                ELSE ((s.avg_deal_sns_subscribers::FLOAT / s.avg_pre_deal_sns_subscribers) - 1)
+            END,
+            2
+        ) as daily_sns_subscribers_growth_pct
+
     FROM deal_metrics d
         LEFT JOIN pre_deal_metrics p
             ON d.asin = p.asin
             AND d.event_name = p.event_name
             AND d.promo_start_date = p.promo_start_date
+        LEFT JOIN sns_metrics s
+            ON d.asin = s.asin
+            AND d.event_name = s.event_name
+            AND d.promo_start_date = s.promo_start_date
         LEFT JOIN andes.roi_ml_ddl.VENDOR_COMPANY_CODES v
             ON v.vendor_code = d.vendor_code
+
     WHERE d.promo_start_date IS NOT NULL
     ORDER BY 
         d.promo_start_date DESC,
         d.daily_deal_ops * d.event_duration_days DESC
 );
-
-
 
 -- Grant permissions
 -- GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_asin TO PUBLIC;
