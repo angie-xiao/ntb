@@ -113,20 +113,22 @@ CREATE TEMP TABLE promotion_details AS (
             ELSE 'OTHER'
         END) as event_name
     FROM andes.pdm.fact_promotion_cp f
-        JOIN andes.pdm.dim_promotion p
+        JOIN 
+            (
+                SELECT 
+                    promotion_key,
+                    start_datetime,
+                    end_datetime,
+                    promotion_internal_title
+                FROM andes.pdm.dim_promotion
+                WHERE marketplace_key = 7
+                    AND approval_status IN ('Approved', 'Scheduled')
+                    AND promotion_type IN ('Best Deal', 'Deal of the Day', 'Lightning Deal', 'Event Deal')
+                    AND UPPER(promotion_internal_title) NOT LIKE '%OIH%'
+                    AND TO_DATE(start_datetime, 'YYYY-MM-DD') BETWEEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - interval '365 days'
+                        AND TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD')
+        ) p
         ON f.promotion_key = p.promotion_key
-        AND p.marketplace_key = 7
-    WHERE f.region_id = 1
-        AND f.marketplace_key = 7
-        AND (p.approval_status = 'Approved' or p.approval_status = 'Scheduled')
-        AND p.promotion_type in (
-            'Best Deal', 'Deal of the Day', 'Lightning Deal', 'Event Deal'
-            -- 'Local Deal', Price Discount, Sales Discount, Coupon, Subscribe & Save, Markdown, Content Only, Pegasus Campaign, Gemini Campaign
-        )
-        -- AND p.promotion_type NOT IN ('Coupon', 'Sales Discount')
-        AND UPPER(p.promotion_internal_title) NOT LIKE '%OIH%'
-        AND TO_DATE(p.start_datetime, 'YYYY-MM-DD') BETWEEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - interval '365 days'
-            AND TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD')
 );
 
 
@@ -198,17 +200,21 @@ Pre-deal range = T13W
 *************************/
 DROP TABLE IF EXISTS pre_deal_date_ranges;
 CREATE TEMP TABLE pre_deal_date_ranges AS (
-    SELECT 
+    SELECT DISTINCT
         asin,
-        -- item_name,
-        promo_start_date,
-        promo_end_date,
+        MIN(promo_start_date) as promo_start_date,
+        MAX(promo_end_date) as promo_end_date,
         event_name,
         event_year,
         event_month,
-        promo_start_date - interval '91 day' AS pre_deal_start_date,
-        promo_start_date - interval '1 day' AS pre_deal_end_date -- T13W
+        MIN(promo_start_date) - interval '91 day' AS pre_deal_start_date,
+        MIN(promo_start_date) - interval '1 day' AS pre_deal_end_date
     FROM consolidated_promos
+    GROUP BY 
+        asin,
+        event_name,
+        event_year,
+        event_month
 );
 
 
@@ -217,6 +223,18 @@ Pre-Deal period orders with clean joins
 *************************/
 DROP TABLE IF EXISTS pre_deal_orders;
 CREATE TEMP TABLE pre_deal_orders AS (
+
+    WITH filtered_orders AS (
+        -- Filter base_orders first to reduce data volume
+        SELECT *
+        FROM base_orders b
+        WHERE EXISTS (
+            SELECT 1 
+            FROM pre_deal_date_ranges p 
+            WHERE b.asin = p.asin
+            AND b.order_date BETWEEN p.pre_deal_start_date AND p.pre_deal_end_date
+        )
+    )
     SELECT DISTINCT
         b.*,
         pdr.promo_start_date,
@@ -226,8 +244,8 @@ CREATE TEMP TABLE pre_deal_orders AS (
         pdr.event_month,
         'PRE_DEAL' as period_type,
         'N' as is_promotion
-    FROM base_orders b
-        INNER JOIN pre_deal_date_ranges pdr
+    FROM filtered_orders b
+    INNER JOIN pre_deal_date_ranges pdr
         ON b.asin = pdr.asin
     WHERE b.order_date BETWEEN pdr.pre_deal_start_date AND pdr.pre_deal_end_date
 
