@@ -439,10 +439,10 @@ CREATE TEMP TABLE sns_metrics AS (
 
 -- + booker.D_ASINS_MARKETPLACE_ATTRIBUTES.product_type (PL)
 /*************************
-Final table creation
+Compare deal vs pre deal periods
 *************************/
-DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_asin;
-CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
+DROP TABLE IF EXISTS deal_growth;
+CREATE TEMP TABLE deal_growth AS (
     SELECT 
         d.asin,
         d.item_name,
@@ -533,5 +533,94 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
         d.daily_deal_ops * d.event_duration_days DESC
 );
 
+
+/*************************
+Final table creation
++ YoY calculations
+*************************/
+DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_asin;
+CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
+    SELECT
+        -- asin info
+        t1.asin,
+        t1.item_name,
+        t1.gl_product_group_name,
+        t1.vendor_code,
+        t1.company_name,
+        t1.company_code,
+        t1.brand_code,
+        t1.brand_name,
+        t1.event_name,
+
+        -- curr period
+        t1.promo_start_date,
+        t1.promo_end_date,
+        t1.event_month,
+        t1.event_year,  
+        t1.event_duration_days,
+
+        -- deal
+        t1.daily_deal_shipped_units,
+        t1.daily_deal_ops,  
+        t1.daily_deal_display_ads_amt,
+        t1.daily_deal_subscription_revenue_amt,
+        t1.daily_deal_total_customers,
+        t1.daily_deal_new_customers,    
+        t1.daily_deal_return_customers,
+        t1.daily_deal_sns_subscribers,
+
+        -- pre deal
+        t1.daily_pre_deal_shipped_units,
+        t1.daily_pre_deal_revenue,
+        t1.daily_pre_deal_display_ads_amt,
+        t1.daily_pre_deal_subscription_revenue_amt,
+        t1.daily_pre_deal_total_customers,
+        t1.daily_pre_deal_new_customers,    
+        t1.daily_pre_deal_return_customers,
+        t1.daily_pre_deal_sns_subscribers,
+        
+        -- deal YoY with NULL handling
+        CASE WHEN NULLIF(t2.daily_deal_shipped_units, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_deal_shipped_units-t2.daily_deal_shipped_units)/NULLIF(t2.daily_deal_shipped_units, 0) END as yoy_daily_deal_shipped_units,
+        CASE WHEN NULLIF(t2.daily_deal_ops, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_deal_ops-t2.daily_deal_ops)/NULLIF(t2.daily_deal_ops, 0) END as yoy_daily_deal_ops,
+        CASE WHEN NULLIF(t2.daily_deal_display_ads_amt, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_deal_display_ads_amt-t2.daily_deal_display_ads_amt)/NULLIF(t2.daily_deal_display_ads_amt, 0) END as yoy_daily_deal_display_ads_amt,
+        CASE WHEN NULLIF(t2.daily_deal_subscription_revenue_amt, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_deal_subscription_revenue_amt-t2.daily_deal_subscription_revenue_amt)/NULLIF(t2.daily_deal_subscription_revenue_amt, 0) END as yoy_daily_deal_subscription_revenue_amt,
+        CASE WHEN NULLIF(t2.daily_deal_total_customers, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_deal_total_customers-t2.daily_deal_total_customers)/NULLIF(t2.daily_deal_total_customers, 0) END as yoy_daily_deal_total_customers,
+        CASE WHEN NULLIF(t2.daily_deal_new_customers, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_deal_new_customers-t2.daily_deal_new_customers)/NULLIF(t2.daily_deal_new_customers, 0) END as yoy_daily_deal_new_customers,
+        CASE WHEN NULLIF(t2.daily_deal_return_customers, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_deal_return_customers-t2.daily_deal_return_customers)/NULLIF(t2.daily_deal_return_customers, 0) END as yoy_daily_deal_return_customers,
+        CASE WHEN NULLIF(t2.daily_deal_sns_subscribers, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_deal_sns_subscribers-t2.daily_deal_sns_subscribers)/NULLIF(t2.daily_deal_sns_subscribers, 0) END as yoy_daily_deal_sns_subscribers,
+
+        -- pre deal YoY with NULL handling
+        CASE WHEN NULLIF(t2.daily_pre_deal_shipped_units, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_pre_deal_shipped_units-t2.daily_pre_deal_shipped_units)/NULLIF(t2.daily_pre_deal_shipped_units, 0) END as yoy_daily_pre_deal_shipped_units,
+        CASE WHEN NULLIF(t2.daily_pre_deal_revenue, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_pre_deal_revenue-t2.daily_pre_deal_revenue)/NULLIF(t2.daily_pre_deal_revenue, 0) END as yoy_daily_pre_deal_revenue,
+        CASE WHEN NULLIF(t2.daily_pre_deal_display_ads_amt, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_pre_deal_display_ads_amt-t2.daily_pre_deal_display_ads_amt)/NULLIF(t2.daily_pre_deal_display_ads_amt, 0) END as yoy_daily_pre_deal_display_ads_amt,
+        CASE WHEN NULLIF(t2.daily_pre_deal_subscription_revenue_amt, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_pre_deal_subscription_revenue_amt-t2.daily_pre_deal_subscription_revenue_amt)/NULLIF(t2.daily_pre_deal_subscription_revenue_amt, 0) END as yoy_daily_pre_deal_subscription_revenue_amt,
+        CASE WHEN NULLIF(t2.daily_pre_deal_total_customers, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_pre_deal_total_customers-t2.daily_pre_deal_total_customers)/NULLIF(t2.daily_pre_deal_total_customers, 0) END as yoy_daily_pre_deal_total_customers,
+        CASE WHEN NULLIF(t2.daily_pre_deal_new_customers, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_pre_deal_new_customers-t2.daily_pre_deal_new_customers)/NULLIF(t2.daily_pre_deal_new_customers, 0) END as yoy_daily_pre_deal_new_customers,
+        CASE WHEN NULLIF(t2.daily_pre_deal_return_customers, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_pre_deal_return_customers-t2.daily_pre_deal_return_customers)/NULLIF(t2.daily_pre_deal_return_customers, 0) END as yoy_daily_pre_deal_return_customers,
+        CASE WHEN NULLIF(t2.daily_pre_deal_sns_subscribers, 0) IS NULL THEN NULL 
+            ELSE (t1.daily_pre_deal_sns_subscribers-t2.daily_pre_deal_sns_subscribers)/NULLIF(t2.daily_pre_deal_sns_subscribers, 0) END as yoy_daily_pre_deal_sns_subscribers
+
+    FROM deal_growth t1
+    LEFT JOIN deal_growth t2
+        ON t1.asin = t2.asin
+        AND t1.event_name = t2.event_name
+        AND t1.event_year - 1 = t2.event_year
+        
+);
 -- Grant permissions
 -- GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_asin TO PUBLIC;
