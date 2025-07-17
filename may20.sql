@@ -579,41 +579,25 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
         t1.daily_pre_deal_return_customers,
         t1.daily_pre_deal_sns_subscribers,
         
-        -- deal YoY with NULL handling
-        CASE WHEN NULLIF(t2.daily_deal_shipped_units, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_deal_shipped_units-t2.daily_deal_shipped_units)/NULLIF(t2.daily_deal_shipped_units, 0) END as yoy_daily_deal_shipped_units,
-        CASE WHEN NULLIF(t2.daily_deal_ops, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_deal_ops-t2.daily_deal_ops)/NULLIF(t2.daily_deal_ops, 0) END as yoy_daily_deal_ops,
-        CASE WHEN NULLIF(t2.daily_deal_display_ads_amt, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_deal_display_ads_amt-t2.daily_deal_display_ads_amt)/NULLIF(t2.daily_deal_display_ads_amt, 0) END as yoy_daily_deal_display_ads_amt,
-        CASE WHEN NULLIF(t2.daily_deal_subscription_revenue_amt, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_deal_subscription_revenue_amt-t2.daily_deal_subscription_revenue_amt)/NULLIF(t2.daily_deal_subscription_revenue_amt, 0) END as yoy_daily_deal_subscription_revenue_amt,
-        CASE WHEN NULLIF(t2.daily_deal_total_customers, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_deal_total_customers-t2.daily_deal_total_customers)/NULLIF(t2.daily_deal_total_customers, 0) END as yoy_daily_deal_total_customers,
-        CASE WHEN NULLIF(t2.daily_deal_new_customers, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_deal_new_customers-t2.daily_deal_new_customers)/NULLIF(t2.daily_deal_new_customers, 0) END as yoy_daily_deal_new_customers,
-        CASE WHEN NULLIF(t2.daily_deal_return_customers, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_deal_return_customers-t2.daily_deal_return_customers)/NULLIF(t2.daily_deal_return_customers, 0) END as yoy_daily_deal_return_customers,
-        CASE WHEN NULLIF(t2.daily_deal_sns_subscribers, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_deal_sns_subscribers-t2.daily_deal_sns_subscribers)/NULLIF(t2.daily_deal_sns_subscribers, 0) END as yoy_daily_deal_sns_subscribers,
+        -- Last year's deal metrics
+        t2.daily_deal_shipped_units as ly_daily_deal_shipped_units,
+        t2.daily_deal_ops as ly_daily_deal_ops,
+        t2.daily_deal_display_ads_amt as ly_daily_deal_display_ads_amt,
+        t2.daily_deal_subscription_revenue_amt as ly_daily_deal_subscription_revenue_amt,
+        t2.daily_deal_total_customers as ly_daily_deal_total_customers,
+        t2.daily_deal_new_customers as ly_daily_deal_new_customers,
+        t2.daily_deal_return_customers as ly_daily_deal_return_customers,
+        t2.daily_deal_sns_subscribers as ly_daily_deal_sns_subscribers,
 
-        -- pre deal YoY with NULL handling
-        CASE WHEN NULLIF(t2.daily_pre_deal_shipped_units, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_pre_deal_shipped_units-t2.daily_pre_deal_shipped_units)/NULLIF(t2.daily_pre_deal_shipped_units, 0) END as yoy_daily_pre_deal_shipped_units,
-        CASE WHEN NULLIF(t2.daily_pre_deal_revenue, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_pre_deal_revenue-t2.daily_pre_deal_revenue)/NULLIF(t2.daily_pre_deal_revenue, 0) END as yoy_daily_pre_deal_revenue,
-        CASE WHEN NULLIF(t2.daily_pre_deal_display_ads_amt, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_pre_deal_display_ads_amt-t2.daily_pre_deal_display_ads_amt)/NULLIF(t2.daily_pre_deal_display_ads_amt, 0) END as yoy_daily_pre_deal_display_ads_amt,
-        CASE WHEN NULLIF(t2.daily_pre_deal_subscription_revenue_amt, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_pre_deal_subscription_revenue_amt-t2.daily_pre_deal_subscription_revenue_amt)/NULLIF(t2.daily_pre_deal_subscription_revenue_amt, 0) END as yoy_daily_pre_deal_subscription_revenue_amt,
-        CASE WHEN NULLIF(t2.daily_pre_deal_total_customers, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_pre_deal_total_customers-t2.daily_pre_deal_total_customers)/NULLIF(t2.daily_pre_deal_total_customers, 0) END as yoy_daily_pre_deal_total_customers,
-        CASE WHEN NULLIF(t2.daily_pre_deal_new_customers, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_pre_deal_new_customers-t2.daily_pre_deal_new_customers)/NULLIF(t2.daily_pre_deal_new_customers, 0) END as yoy_daily_pre_deal_new_customers,
-        CASE WHEN NULLIF(t2.daily_pre_deal_return_customers, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_pre_deal_return_customers-t2.daily_pre_deal_return_customers)/NULLIF(t2.daily_pre_deal_return_customers, 0) END as yoy_daily_pre_deal_return_customers,
-        CASE WHEN NULLIF(t2.daily_pre_deal_sns_subscribers, 0) IS NULL THEN NULL 
-            ELSE (t1.daily_pre_deal_sns_subscribers-t2.daily_pre_deal_sns_subscribers)/NULLIF(t2.daily_pre_deal_sns_subscribers, 0) END as yoy_daily_pre_deal_sns_subscribers
+        -- Last year's pre-deal metrics
+        t2.daily_pre_deal_shipped_units as ly_daily_pre_deal_shipped_units,
+        t2.daily_pre_deal_revenue as ly_daily_pre_deal_revenue,
+        t2.daily_pre_deal_display_ads_amt as ly_daily_pre_deal_display_ads_amt,
+        t2.daily_pre_deal_subscription_revenue_amt as ly_daily_pre_deal_subscription_revenue_amt,
+        t2.daily_pre_deal_total_customers as ly_daily_pre_deal_total_customers,
+        t2.daily_pre_deal_new_customers as ly_daily_pre_deal_new_customers,
+        t2.daily_pre_deal_return_customers as ly_daily_pre_deal_return_customers,
+        t2.daily_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers
 
     FROM deal_growth t1
     LEFT JOIN deal_growth t2
@@ -622,5 +606,6 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin AS (
         AND t1.event_year - 1 = t2.event_year
         
 );
+
 -- Grant permissions
 -- GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_asin TO PUBLIC;
