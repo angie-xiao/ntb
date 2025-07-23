@@ -1,5 +1,5 @@
 --+ merchant_sku in booker.d_mp_merchant_sku_asin_map
--- no need to have brand level metrics???
+
 
 /*************************
 Base Orders Query
@@ -195,7 +195,6 @@ CREATE TEMP TABLE deal_orders AS (
 
 /*************************
 Create pre-deal date ranges
-
 Pre-deal range = T13W
 *************************/
 DROP TABLE IF EXISTS pre_deal_date_ranges;
@@ -248,7 +247,6 @@ CREATE TEMP TABLE pre_deal_orders AS (
     INNER JOIN pre_deal_date_ranges pdr
         ON b.asin = pdr.asin
     WHERE b.order_date BETWEEN pdr.pre_deal_start_date AND pdr.pre_deal_end_date
-
 );
 
 
@@ -259,16 +257,19 @@ DROP TABLE IF EXISTS first_purchases;
 CREATE TEMP TABLE first_purchases AS (
     SELECT 
         customer_id,
-        brand_code,
+        deal_orders.brand_code, 
         MIN(order_date) as first_purchase_date
     FROM (
         SELECT customer_id, brand_code, order_date FROM deal_orders
         UNION ALL
         SELECT customer_id, brand_code, order_date FROM pre_deal_orders
-    ) all_orders
-    WHERE brand_code IS NOT NULL
-    GROUP BY customer_id, brand_code
+    ) deal_orders  
+    WHERE deal_orders.brand_code IS NOT NULL  
+    GROUP BY 
+        customer_id,
+        deal_orders.brand_code
 );
+
 
 
 /*************************
@@ -364,7 +365,10 @@ CREATE TEMP TABLE deal_metrics AS (
             SUM(subscription_revenue_amt) as subscription_revenue_amt,
             COUNT(DISTINCT customer_id) as total_customers_asin,
             COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 1 THEN customer_id END) as new_customers_asin,
-            COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END) as return_customers_asin
+            COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END) as return_customers_asin,
+
+            COUNT(DISTINCT customer_id) as total_customers,
+            COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END) as return_customers
         FROM deal_daily_summary
         GROUP BY 1,2,3,4,5,6,7,8
     ),
@@ -380,6 +384,7 @@ CREATE TEMP TABLE deal_metrics AS (
         FROM deal_daily_summary
         GROUP BY 1,2,3
     )
+
     SELECT 
         bm.*,
         mam.dama_mfg_vendor_code as vendor_code,
