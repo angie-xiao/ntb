@@ -1,37 +1,71 @@
+-- for sns metrics beyond ASIN level
+-- use count(distinct customer_id) ---> SUBS_SAVE_REPORTING.FCT_SNS_SALES_DETAILS_DAILY 
+-- once subscription request approved
+
+
 /*************************
 Base Orders Query
 - Gets order data for consumables categories
 - Includes only retail merchant orders with shipped units > 0 
 *************************/
-DROP TABLE IF EXISTS base_orders;
-CREATE TEMP TABLE base_orders AS (
+-- 1. First get base order data
+DROP TABLE IF EXISTS base_orders_step1;
+CREATE TEMP TABLE base_orders_step1 AS (
     SELECT 
-        o.asin,
+        asin,
+        customer_id,
+        customer_shipment_item_id,
+        TO_DATE(order_datetime, 'YYYY-MM-DD') as order_date,
+        shipped_units,
+        marketplace_id,
+        region_id
+    FROM andes.booker.d_unified_cust_shipment_items
+    WHERE region_id = 1
+        AND marketplace_id = 7
+        AND shipped_units > 0
+        AND is_retail_merchant = 'Y'
+        AND order_datetime BETWEEN current_date - interval '730 days' AND current_date 
+        AND order_condition != 6 -- not cancelled or fraudulent orders
+);
+
+-- 2. Add ASIN attributes
+DROP TABLE IF EXISTS base_orders_step2;
+CREATE TEMP TABLE base_orders_step2 AS (
+    SELECT 
+        o.*,
         maa.item_name,
-        o.customer_id,
-        o.customer_shipment_item_id,
-        TO_DATE(o.order_datetime, 'YYYY-MM-DD') as order_date,
-        o.shipped_units,
         maa.gl_product_group,
         maa.brand_name,
         maa.brand_code,
-        COALESCE(cp.revenue_share_amt, 0) as revenue_share_amt,
-        COALESCE(cp.subscription_revenue_amt, 0) as subscription_revenue_amt
-    FROM andes.booker.d_unified_cust_shipment_items o
+        -- Add GL product group name mapping
+        (CASE 
+            WHEN maa.gl_product_group = 510 THEN 'Lux Beauty'
+            WHEN maa.gl_product_group = 364 THEN 'Personal Care Appliances'    
+            WHEN maa.gl_product_group = 325 THEN 'Grocery'
+            WHEN maa.gl_product_group = 199 THEN 'Pet'
+            WHEN maa.gl_product_group = 194 THEN 'Beauty'
+            WHEN maa.gl_product_group = 121 THEN 'HPC'
+            WHEN maa.gl_product_group = 75 THEN 'Baby'    
+        END) as gl_product_group_name
+    FROM base_orders_step1 o
         INNER JOIN andes.booker.d_mp_asin_attributes maa
             ON maa.asin = o.asin
             AND maa.marketplace_id = o.marketplace_id
             AND maa.region_id = o.region_id
             AND maa.gl_product_group IN (510, 364, 325, 199, 194, 121, 75)
+);
+
+-- 3. Add revenue data
+DROP TABLE IF EXISTS base_orders;
+CREATE TEMP TABLE base_orders AS (
+    SELECT 
+        o.*,
+        cp.revenue_share_amt
+    FROM base_orders_step2 o
         LEFT JOIN andes.contribution_ddl.o_wbr_cp_na cp
             ON o.customer_shipment_item_id = cp.customer_shipment_item_id 
             AND o.asin = cp.asin
-    WHERE o.region_id = 1
-        AND o.marketplace_id = 7
-        AND o.shipped_units > 0
-        AND o.is_retail_merchant = 'Y'
-        AND o.order_datetime BETWEEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - interval '730 days' -- 2yr
-            AND TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD')
+    WHERE cp.revenue_share_amt > 0
 );
 
 
@@ -121,8 +155,9 @@ CREATE TEMP TABLE promotion_details AS (
                     AND approval_status IN ('Approved', 'Scheduled')
                     AND promotion_type IN ('Best Deal', 'Deal of the Day', 'Lightning Deal', 'Event Deal')
                     AND UPPER(promotion_internal_title) NOT LIKE '%OIH%'
-                    AND TO_DATE(start_datetime, 'YYYY-MM-DD') BETWEEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - interval '730 days'
-                        AND TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD')
+                    AND TO_DATE(start_datetime, 'YYYY-MM-DD') 
+                        BETWEEN current_date - interval '730 days'
+                        AND current_date
         ) p
         ON f.promotion_key = p.promotion_key
 );
@@ -163,7 +198,175 @@ CREATE TEMP TABLE consolidated_promos AS (
 
 
 /*************************
+SNS Metrics - daily aggregations
+*************************/
+-- 1. Base SNS data with AVG per ASIN
+DROP TABLE IF EXISTS base_sns_avg;
+CREATE TEMP TABLE base_sns_avg AS (
+    SELECT 
+        sns.asin,
+        b.brand_code,
+        b.brand_name,
+        b.vendor_code,
+        b.company_code,
+        b.company_name,
+        b.gl_product_group,
+        b.gl_product_group_name,
+        p.event_name,
+        p.event_year,
+
+        AVG(CASE 
+            WHEN TO_DATE(sns.snapshot_date, 'YYYY-MM-DD') 
+                BETWEEN p.promo_start_date AND p.promo_end_date 
+            THEN sns.active_subscription_count 
+        END) as avg_deal_sns_subscribers,
+        
+        AVG(CASE 
+            WHEN TO_DATE(sns.snapshot_date, 'YYYY-MM-DD') 
+                BETWEEN p.promo_start_date - interval '91 day' AND p.promo_start_date - interval '1 day'
+            THEN sns.active_subscription_count 
+        END) as avg_pre_deal_sns_subscribers
+    
+    FROM andes.subs_save_ddl.d_daily_active_sns_asin_detail sns
+        INNER JOIN consolidated_promos p 
+            ON sns.asin = p.asin
+        LEFT JOIN base_orders b
+            ON sns.asin = b.asin
+            and sns.marketplace_id = b.marketplace_id
+            and sns.gl_product_group = b.gl_product_group
+
+    WHERE sns.marketplace_id = 7
+        AND sns.gl_product_group in (510, 364, 325, 199, 194, 121, 75)
+
+    GROUP BY 
+        sns.asin,
+        b.brand_code,
+        b.brand_name,
+        b.vendor_code,
+        b.company_code,
+        b.company_name,
+        b.gl_product_group,
+        b.gl_product_group_name,
+        p.event_name,
+        p.event_year
+);
+
+
+--2. Brand level avg
+-- Brand avg SnS (across all asins)
+DROP TABLE IF EXISTS brand_sns_sums;
+CREATE TEMP TABLE brand_sns_sums AS (
+    SELECT 
+        brand_code,
+        brand_name,
+        vendor_code,
+        company_code,
+        company_name,
+        gl_product_group,
+        gl_product_group_name,
+        event_name,
+        event_year,
+        event_name,
+        avg(avg_deal_sns_subscribers) as avg_deal_sns_subscribers_brand,
+        avg(avg_pre_deal_sns_subscribers) as avg_pre_deal_sns_subscribers_brand
+    FROM base_sns_avg
+    WHERE company_code IS NOT NULL
+    GROUP BY
+        brand_code,
+        brand_name,
+        vendor_code,
+        company_code,
+        company_name,
+        gl_product_group,
+        gl_product_group_name,
+        event_name,
+        event_year,
+        event_name
+);
+
+--3. Company level avg
+-- company avg SnS (across all asins)
+DROP TABLE IF EXISTS company_sns_sums;
+CREATE TEMP TABLE company_sns_sums AS (
+    SELECT 
+        gl_product_group,
+        company_code,
+        event_name,
+        event_year,
+        avg(avg_deal_sns_subscribers) as avg_deal_sns_subscribers_company,
+        avg(avg_pre_deal_sns_subscribers) as avg_pre_deal_sns_subscribers_company
+    FROM base_sns_avg
+    WHERE company_code IS NOT NULL
+    GROUP BY
+        gl_product_group,
+        company_code,
+        event_name,
+        event_year
+);
+
+--4. GL level avg
+DROP TABLE IF EXISTS gl_sns_sums;
+CREATE TEMP TABLE gl_sns_sums AS (
+    SELECT 
+        gl_product_group,
+        event_name,
+        event_year,
+        avg(avg_deal_sns_subscribers_company) as avg_deal_sns_subscribers_gl,
+        avg(avg_pre_deal_sns_subscribers_company) as avg_pre_deal_sns_subscribers_gl
+    FROM company_sns_sums
+    WHERE gl_product_group IS NOT NULL
+    GROUP BY
+        gl_product_group,
+        event_name,
+        event_year
+);
+
+--4. Final SNS metrics combining all levels
+DROP TABLE IF EXISTS sns_metrics;
+CREATE TEMP TABLE sns_metrics AS (
+    SELECT 
+        b.asin,
+        b.gl_product_group,
+        b.brand_code, 
+        b.company_code,
+        b.event_name,
+        b.event_year,
+
+        -- ASIN level
+        b.avg_deal_sns_subscribers,
+        b.avg_pre_deal_sns_subscribers,
+
+        -- Brand level
+        br.avg_deal_sns_subscribers_brand,
+        br.avg_pre_deal_sns_subscribers_brand,
+
+        -- Company level
+        c.avg_deal_sns_subscribers_company,
+        c.avg_pre_deal_sns_subscribers_company,
+
+        -- GL level
+        g.avg_deal_sns_subscribers_gl,
+        g.avg_pre_deal_sns_subscribers_gl
+
+    FROM base_sns_avg b
+        LEFT JOIN brand_sns_sums br
+            ON b.brand_code = br.brand_code
+            AND b.event_year = br.event_year
+            AND b.event_name = br.event_name
+        LEFT JOIN company_sns_sums c
+            ON b.company_code = c.company_code
+            AND b.event_year = c.event_year
+            AND b.event_name = c.event_name
+        LEFT JOIN gl_sns_sums g
+            ON b.gl_product_group = g.gl_product_group
+            AND b.event_year = g.event_year
+            AND b.event_name = g.event_name
+);
+
+
+/*************************
 Deal period orders
++ vendor code, company code, company name
 *************************/
 DROP TABLE IF EXISTS deal_orders;
 CREATE TEMP TABLE deal_orders AS (
@@ -175,17 +378,26 @@ CREATE TEMP TABLE deal_orders AS (
         p.event_year,
         p.event_month,
         (CASE 
-            WHEN p.promo_end_date >= TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') 
-                THEN TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - p.promo_start_date + 1
+            WHEN p.promo_end_date >= current_date
+                THEN current_date - p.promo_start_date + 1
             ELSE p.promo_end_date - p.promo_start_date + 1
         END) as event_duration_days,
         'DEAL' as period_type,
-        'Y' as is_promotion
+        'Y' as is_promotion,
+        mam.dama_mfg_vendor_code as vendor_code,
+        v.company_code,
+        v.company_name
     FROM base_orders b
         INNER JOIN consolidated_promos p 
-        ON b.asin = p.asin
-        AND b.customer_shipment_item_id = p.customer_shipment_item_id
-        AND b.order_date BETWEEN p.promo_start_date AND p.promo_end_date
+            ON b.asin = p.asin
+            AND b.customer_shipment_item_id = p.customer_shipment_item_id
+            AND b.order_date BETWEEN p.promo_start_date AND p.promo_end_date
+        LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam 
+            ON mam.asin = b.asin 
+            AND mam.marketplace_id = 7 
+            AND mam.region_id = 1
+        LEFT JOIN andes.roi_ml_ddl.vendor_company_codes v 
+            ON mam.dama_mfg_vendor_code = v.vendor_code
 );
 
 
@@ -218,35 +430,35 @@ Pre-Deal period orders with clean joins
 *************************/
 DROP TABLE IF EXISTS pre_deal_orders;
 CREATE TEMP TABLE pre_deal_orders AS (
-    WITH filtered_orders AS (
-        SELECT *
-        FROM base_orders b
-        WHERE EXISTS (
-            SELECT 1 
-            FROM pre_deal_date_ranges p 
-            WHERE b.asin = p.asin
-            AND b.order_date BETWEEN p.pre_deal_start_date AND p.pre_deal_end_date
-        )
-    )
     SELECT DISTINCT
         b.*,
         pdr.promo_start_date,
         pdr.promo_end_date,
         pdr.event_name,
         pdr.event_year,
-        pdr.event_month,
+        pdr.event_month, 
         'PRE_DEAL' as period_type,
-        'N' as is_promotion
-    FROM filtered_orders b
+        'N' as is_promotion,
+        mam.dama_mfg_vendor_code as vendor_code,
+        v.company_code,
+        v.company_name
+    FROM base_orders b
         INNER JOIN pre_deal_date_ranges pdr
-        ON b.asin = pdr.asin
-    WHERE b.order_date BETWEEN pdr.pre_deal_start_date AND pdr.pre_deal_end_date
+            ON b.asin = pdr.asin
+        LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam 
+            ON mam.asin = b.asin 
+            AND mam.marketplace_id = 7 
+            AND mam.region_id = 1
+        LEFT JOIN andes.roi_ml_ddl.vendor_company_codes v 
+            ON mam.dama_mfg_vendor_code = v.vendor_code
+    WHERE b.order_date 
+        BETWEEN pdr.pre_deal_start_date 
+        AND pdr.pre_deal_end_date
 );
 
 
 /*************************
-FIRST PURCHASE - 
-Single source of truth
+First purchase PER CUSTOMER
 *************************/
 DROP TABLE IF EXISTS first_purchases;
 CREATE TEMP TABLE first_purchases AS (
@@ -266,9 +478,8 @@ CREATE TEMP TABLE first_purchases AS (
 );
 
 
-
 /*************************
-Per customer per day summary
+PER CUSTOMER PER DAY summary
 Split by period type but using same first_purchases
 *************************/
 DROP TABLE IF EXISTS deal_daily_summary;
@@ -277,6 +488,10 @@ CREATE TEMP TABLE deal_daily_summary AS (
         o.asin,
         o.item_name,
         o.gl_product_group,
+        o.gl_product_group_name,
+        o.vendor_code,
+        o.company_code,
+        o.company_name,
         o.brand_code,
         o.brand_name,
         o.event_name,
@@ -293,8 +508,7 @@ CREATE TEMP TABLE deal_daily_summary AS (
             ELSE 0 
         END) AS is_first_brand_purchase,
         o.shipped_units,
-        o.revenue_share_amt,
-        o.subscription_revenue_amt
+        o.revenue_share_amt
     FROM deal_orders o
         LEFT JOIN first_purchases fp
         ON o.customer_id = fp.customer_id
@@ -311,6 +525,10 @@ CREATE TEMP TABLE pre_deal_daily_summary AS (
         o.asin,
         o.item_name,
         o.gl_product_group,
+        o.gl_product_group_name,
+        o.vendor_code,
+        o.company_code,
+        o.company_name,
         o.brand_code,
         o.brand_name,
         o.event_name,
@@ -326,8 +544,7 @@ CREATE TEMP TABLE pre_deal_daily_summary AS (
             ELSE 0 
         END) AS is_first_brand_purchase,
         o.shipped_units,
-        o.revenue_share_amt,
-        o.subscription_revenue_amt
+        o.revenue_share_amt
     FROM pre_deal_orders o
         LEFT JOIN first_purchases fp
         ON o.customer_id = fp.customer_id
@@ -336,585 +553,122 @@ CREATE TEMP TABLE pre_deal_daily_summary AS (
 
 
 /*************************
-Base metrics aggregation
+ASIN level metrics
 *************************/
-DROP TABLE IF EXISTS base_metrics;
-CREATE TEMP TABLE base_metrics AS (
+-- 1. First create base ASIN metrics for deal period
+DROP TABLE IF EXISTS asin_deal_base;
+CREATE TEMP TABLE asin_deal_base AS (
     SELECT 
         asin,
         item_name,
         gl_product_group,
+        gl_product_group_name,
+        vendor_code,
+        company_code,
+        company_name,
         brand_code,
         brand_name,
         event_name,
-        promo_start_date,
-        promo_end_date,
-        event_month,
         event_year,
         event_duration_days,
-        SUM(shipped_units) as shipped_units,
-        SUM(revenue_share_amt) as revenue,
-        SUM(subscription_revenue_amt) as subscription_revenue_amt,
-        COUNT(DISTINCT customer_id) as total_customers_asin,
-        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 1 THEN customer_id END) as new_customers_asin,
-        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END) as return_customers_asin
+        -- Properly calculate daily averages for deal period
+        SUM(shipped_units)/MAX(event_duration_days) as daily_deal_shipped_units_asin,
+        SUM(revenue_share_amt)/MAX(event_duration_days) as daily_deal_revenue_asin,
+        COUNT(DISTINCT customer_id)/MAX(event_duration_days) as daily_deal_customers_asin,
+        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 1 THEN customer_id END)/MAX(event_duration_days) as daily_deal_new_customers_asin,
+        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END)/MAX(event_duration_days) as daily_deal_return_customers_asin
     FROM deal_daily_summary
-    GROUP BY 1,2,3,4,5,6,7,8,9,10,11 
+    WHERE period_type = 'DEAL'
+    GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12
 );
-    
 
--- 1. ASIN level metrics
-DROP TABLE IF EXISTS asin_metrics;
-CREATE TEMP TABLE asin_metrics AS (
+
+-- 2. Create base ASIN metrics for pre-deal period
+DROP TABLE IF EXISTS asin_pre_deal_base;
+CREATE TEMP TABLE asin_pre_deal_base AS (
     SELECT 
         asin,
-        item_name,
-        gl_product_group,
-        brand_code, 
-        brand_name,
         event_name,
-        promo_start_date,
         event_year,
-        event_month,  -- Add this line
-        SUM(shipped_units)/91 as daily_pre_deal_shipped_units,
-        SUM(revenue_share_amt)/91 as daily_pre_deal_revenue,
-        SUM(subscription_revenue_amt)/91 as daily_pre_deal_subscription_revenue_amt,
-        COUNT(DISTINCT customer_id)/91 as daily_pre_deal_total_customers_asin,
+        -- Properly calculate daily averages for pre-deal period (always 91 days)
+        SUM(shipped_units)/91 as daily_pre_deal_shipped_units_asin,
+        SUM(revenue_share_amt)/91 as daily_pre_deal_revenue_asin,
+        COUNT(DISTINCT customer_id)/91 as daily_pre_deal_customers_asin,
         COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers_asin,
         COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers_asin
     FROM pre_deal_daily_summary
-    GROUP BY 1,2,3,4,5,6,7,8,9  -- Update the GROUP BY to include event_month
+    WHERE period_type = 'PRE_DEAL'
+    GROUP BY 1,2,3
 );
 
-
--- 2. Brand level metrics
-DROP TABLE IF EXISTS brand_metrics;
-CREATE TEMP TABLE brand_metrics AS (
+-- 3. Combine ASIN metrics with SNS data
+DROP TABLE IF EXISTS asin_combined_metrics;
+CREATE TEMP TABLE asin_combined_metrics AS (
     SELECT 
-        brand_code,
-        event_name,
-        promo_start_date,
-        event_year,
-        event_month,
-        -- Deal period metrics
-        COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END) as total_customers_brand,
-        COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as new_customers_brand,
-        COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as return_customers_brand,
-        
-        -- Pre-deal period metrics
-        COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_total_customers_brand,
-        COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers_brand,
-        COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers_brand
-    FROM (
-        SELECT 
-            customer_id, 
-            brand_code, 
-            event_name,
-            promo_start_date,
-            event_year,
-            event_month, 
-            period_type,
-            is_first_brand_purchase
-        FROM deal_daily_summary
-        UNION ALL
-        SELECT 
-            customer_id, 
-            brand_code,
-            event_name,
-            promo_start_date,
-            event_year,
-            event_month,
-            period_type,
-            is_first_brand_purchase
-        FROM pre_deal_daily_summary
-    ) combined_data
-    WHERE brand_code IS NOT NULL
-    GROUP BY 1,2,3,4,5  -- Update GROUP BY to include event_month
-);
-
-
--- 3. Company level metrics for deal period
-DROP TABLE IF EXISTS company_deal_metrics;
-CREATE TEMP TABLE company_deal_metrics AS (
-    SELECT 
-        d.gl_product_group, 
-        v.company_code,
-        d.event_name,
-        d.promo_start_date,
-        d.event_year,
-        d.event_month,
-        SUM(d.shipped_units) as shipped_units,
-        SUM(d.revenue_share_amt) as revenue,
-        SUM(d.subscription_revenue_amt) as subscription_revenue_amt,
-        COUNT(DISTINCT d.customer_id) as total_customers_company,
-        COUNT(DISTINCT CASE WHEN d.is_first_brand_purchase = 1 THEN d.customer_id END) as new_customers_company,
-        COUNT(DISTINCT CASE WHEN d.is_first_brand_purchase = 0 THEN d.customer_id END) as return_customers_company
-    FROM deal_daily_summary d
-        LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam 
-            ON mam.asin = d.asin 
-            AND mam.marketplace_id = 7 
-            AND mam.region_id = 1
-        LEFT JOIN andes.roi_ml_ddl.vendor_company_codes v 
-            ON mam.dama_mfg_vendor_code = v.vendor_code
-    WHERE v.company_code IS NOT NULL
-    GROUP BY 1,2,3,4,5,6
-);
-
-
---4. Product Group metrics for deal period
-DROP TABLE IF EXISTS gl_deal_metrics;
-CREATE TEMP TABLE gl_deal_metrics AS (
-    SELECT 
-        gl_product_group,
-        event_name,
-        promo_start_date,
-        event_year,
-        event_month,
-        SUM(shipped_units) as shipped_units,
-        SUM(revenue_share_amt) as revenue,
-        SUM(subscription_revenue_amt) as subscription_revenue_amt,
-        COUNT(DISTINCT customer_id) as total_customers_gl,
-        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 1 THEN customer_id END) as new_customers_gl,
-        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END) as return_customers_gl
-    FROM deal_daily_summary
-    WHERE gl_product_group IS NOT NULL
-    GROUP BY 1,2,3,4,5  -- Update GROUP BY to include event_month
-);
-
--- 5. Company level metrics for pre-deal period
-DROP TABLE IF EXISTS company_pre_deal_metrics;
-CREATE TEMP TABLE company_pre_deal_metrics AS (
-    SELECT 
-        d.gl_product_group, 
-        v.company_code,
-        d.event_name,
-        d.promo_start_date,
-        d.event_year,
-        d.event_month,  -- Add this line
-        SUM(d.shipped_units)/91 as daily_pre_deal_shipped_units,
-        SUM(d.revenue_share_amt)/91 as daily_pre_deal_revenue,
-        SUM(d.subscription_revenue_amt)/91 as daily_pre_deal_subscription_revenue_amt,
-        COUNT(DISTINCT d.customer_id)/91 as daily_pre_deal_total_customers_company,
-        COUNT(DISTINCT CASE WHEN d.is_first_brand_purchase = 1 THEN d.customer_id END)/91 as daily_pre_deal_new_customers_company,
-        COUNT(DISTINCT CASE WHEN d.is_first_brand_purchase = 0 THEN d.customer_id END)/91 as daily_pre_deal_return_customers_company
-    FROM pre_deal_daily_summary d
-        LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam 
-            ON mam.asin = d.asin 
-            AND mam.marketplace_id = 7 
-            AND mam.region_id = 1
-        LEFT JOIN andes.roi_ml_ddl.vendor_company_codes v 
-            ON mam.dama_mfg_vendor_code = v.vendor_code
-    WHERE v.company_code IS NOT NULL
-    GROUP BY 1,2,3,4,5,6
-);
-
--- 6. Product Group metrics for pre-deal period
-DROP TABLE IF EXISTS gl_pre_deal_metrics;
-CREATE TEMP TABLE gl_pre_deal_metrics AS (
-    SELECT 
-        gl_product_group,
-        event_name,
-        promo_start_date,
-        event_year,
-        event_month,
-        SUM(shipped_units)/91 as daily_pre_deal_shipped_units,
-        SUM(revenue_share_amt)/91 as daily_pre_deal_revenue,
-        SUM(subscription_revenue_amt)/91 as daily_pre_deal_subscription_revenue_amt,
-        COUNT(DISTINCT customer_id)/91 as daily_pre_deal_total_customers_gl,
-        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers_gl,
-        COUNT(DISTINCT CASE WHEN is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers_gl
-    FROM pre_deal_daily_summary
-    WHERE gl_product_group IS NOT NULL
-    GROUP BY 1,2,3,4,5  -- Update GROUP BY to include event_month
-);
-
-
--- Then modify deal_metrics to use these new tables:
-DROP TABLE IF EXISTS deal_metrics;
-CREATE TEMP TABLE deal_metrics AS (
-    SELECT 
-        bm.*,
-        mam.dama_mfg_vendor_code as vendor_code,
-        v.company_code,
-        -- ASIN level daily metrics
-        bm.shipped_units/event_duration_days as daily_deal_shipped_units,
-        bm.revenue/event_duration_days as daily_deal_ops,            
-        bm.subscription_revenue_amt/event_duration_days as daily_deal_subscription_revenue_amt,
-        bm.total_customers_asin/event_duration_days as daily_deal_total_customers_asin,
-        bm.new_customers_asin/event_duration_days as daily_deal_new_customers_asin,
-        bm.return_customers_asin/event_duration_days as daily_deal_return_customers_asin,
-        
-        -- Brand level daily metrics
-        br.total_customers_brand/event_duration_days as daily_deal_total_customers_brand,
-        br.new_customers_brand/event_duration_days as daily_deal_new_customers_brand,
-        br.return_customers_brand/event_duration_days as daily_deal_return_customers_brand,
-        
-        -- Company level daily metrics
-        cm.total_customers_company/event_duration_days as daily_deal_total_customers_company,
-        cm.new_customers_company/event_duration_days as daily_deal_new_customers_company,
-        cm.return_customers_company/event_duration_days as daily_deal_return_customers_company,
-        cm.shipped_units/event_duration_days as daily_deal_shipped_units_company,
-        cm.revenue/event_duration_days as daily_deal_revenue_company,
-        cm.subscription_revenue_amt/event_duration_days as daily_deal_subscription_revenue_company,
-        
-        -- GL level daily metrics
-        gl.total_customers_gl/event_duration_days as daily_deal_total_customers_gl,
-        gl.new_customers_gl/event_duration_days as daily_deal_new_customers_gl,
-        gl.return_customers_gl/event_duration_days as daily_deal_return_customers_gl,
-        gl.shipped_units/event_duration_days as daily_deal_shipped_units_gl,
-        gl.revenue/event_duration_days as daily_deal_revenue_gl,
-        gl.subscription_revenue_amt/event_duration_days as daily_deal_subscription_revenue_gl
-
-    FROM base_metrics bm
-        LEFT JOIN brand_metrics br
-            ON bm.brand_code = br.brand_code 
-            AND bm.event_name = br.event_name 
-            AND bm.promo_start_date = br.promo_start_date
-        LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam 
-            ON mam.asin = bm.asin 
-            AND mam.marketplace_id = 7 
-            AND mam.region_id = 1
-        LEFT JOIN andes.roi_ml_ddl.vendor_company_codes v 
-            ON mam.dama_mfg_vendor_code = v.vendor_code
-        LEFT JOIN company_deal_metrics cm 
-            ON v.company_code = cm.company_code 
-            AND bm.event_name = cm.event_name 
-            AND bm.promo_start_date = cm.promo_start_date
-        LEFT JOIN gl_deal_metrics gl 
-            ON bm.gl_product_group = gl.gl_product_group 
-            AND bm.event_name = gl.event_name 
-            AND bm.promo_start_date = gl.promo_start_date
-);
-
-
--- Similarly modify pre_deal_metrics to use new tables:
-DROP TABLE IF EXISTS pre_deal_metrics;
-CREATE TEMP TABLE pre_deal_metrics AS (
-    SELECT 
-        a.*,
-        b.daily_pre_deal_total_customers_brand,
-        b.daily_pre_deal_new_customers_brand,
-        b.daily_pre_deal_return_customers_brand,
-        
-        -- Company metrics
-        c.daily_pre_deal_total_customers_company,
-        c.daily_pre_deal_new_customers_company,
-        c.daily_pre_deal_return_customers_company,
-        c.daily_pre_deal_shipped_units as daily_pre_deal_shipped_units_company,
-        c.daily_pre_deal_revenue as daily_pre_deal_revenue_company,
-        c.daily_pre_deal_subscription_revenue_amt as daily_pre_deal_subscription_revenue_company,
-        
-        -- GL metrics
-        g.daily_pre_deal_total_customers_gl,
-        g.daily_pre_deal_new_customers_gl,
-        g.daily_pre_deal_return_customers_gl,
-        g.daily_pre_deal_shipped_units as daily_pre_deal_shipped_units_gl,
-        g.daily_pre_deal_revenue as daily_pre_deal_revenue_gl,
-        g.daily_pre_deal_subscription_revenue_amt as daily_pre_deal_subscription_revenue_gl
-    
-    FROM asin_metrics a
-        LEFT JOIN brand_metrics b
-            ON a.brand_code = b.brand_code 
-            AND a.event_name = b.event_name 
-            AND a.promo_start_date = b.promo_start_date
-        LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam 
-            ON mam.asin = a.asin 
-            AND mam.marketplace_id = 7 
-            AND mam.region_id = 1
-        LEFT JOIN andes.roi_ml_ddl.vendor_company_codes v 
-            ON mam.dama_mfg_vendor_code = v.vendor_code
-        LEFT JOIN company_pre_deal_metrics c 
-            ON v.company_code = c.company_code 
-            AND a.event_name = c.event_name 
-            AND a.promo_start_date = c.promo_start_date
-        LEFT JOIN gl_pre_deal_metrics g 
-            ON a.gl_product_group = g.gl_product_group 
-            AND a.event_name = g.event_name 
-            AND a.promo_start_date = g.promo_start_date
-);
-
-
-/*************************
-1. Base SNS data with AVG per ASIN
-*************************/
-DROP TABLE IF EXISTS base_sns_avg;
-CREATE TEMP TABLE base_sns_avg AS (
-    SELECT 
-        sns.asin,
-        sns.gl_product_group,
-        mam.dama_mfg_vendor_code as vendor_code,
-        v.company_code,
-        p.promo_start_date,
-        p.promo_end_date,
-        p.event_name,
-        p.event_year,
-        p.event_month,  -- Add this line
-        AVG(CASE 
-            WHEN TO_DATE(sns.snapshot_date, 'YYYY-MM-DD') BETWEEN p.promo_start_date AND p.promo_end_date 
-            THEN sns.active_subscription_count 
-        END) as avg_deal_sns_subscribers,
-        AVG(CASE 
-            WHEN TO_DATE(sns.snapshot_date, 'YYYY-MM-DD') BETWEEN p.promo_start_date - interval '91 day' AND p.promo_start_date - interval '1 day'
-            THEN sns.active_subscription_count 
-        END) as avg_pre_deal_sns_subscribers
-    FROM andes.subs_save_ddl.d_daily_active_sns_asin_detail sns
-        INNER JOIN consolidated_promos p ON sns.asin = p.asin
-        LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam 
-            ON mam.asin = sns.asin 
-            AND mam.marketplace_id = 7 
-            AND mam.region_id = 1
-        LEFT JOIN andes.roi_ml_ddl.vendor_company_codes v 
-            ON mam.dama_mfg_vendor_code = v.vendor_code
-    WHERE sns.marketplace_id = 7
-        AND sns.gl_product_group in (510, 364, 325, 199, 194, 121, 75)
-    GROUP BY 1,2,3,4,5,6,7,8,9
-);
-
-
-/*************************
-2. Company level sums
-*************************/
-DROP TABLE IF EXISTS company_sns_sums;
-CREATE TEMP TABLE company_sns_sums AS (
-    SELECT 
-        company_code,
-        promo_start_date,
-        event_name,
-        event_year,
-        event_month,  -- Add this line        
-        SUM(avg_deal_sns_subscribers) as sum_deal_sns_subscribers_company,
-        SUM(avg_pre_deal_sns_subscribers) as sum_pre_deal_sns_subscribers_company
-    FROM base_sns_avg
-    WHERE company_code IS NOT NULL
-    GROUP BY 1,2,3,4,5
-);
-
-
-/*************************
-3. Product Line level sums
-*************************/
-DROP TABLE IF EXISTS pl_sns_sums;
-CREATE TEMP TABLE pl_sns_sums AS (
-    SELECT 
-        gl_product_group,
-        promo_start_date,
-        event_name,
-        event_year,
-        event_month,
-        SUM(avg_deal_sns_subscribers) as sum_deal_sns_subscribers_pl,
-        SUM(avg_pre_deal_sns_subscribers) as sum_pre_deal_sns_subscribers_pl
-    FROM base_sns_avg
-    WHERE gl_product_group IS NOT NULL
-    GROUP BY 1,2,3,4,5
-);
-
-
-/*************************
-4. Final SNS metrics combining all levels
-*************************/
-DROP TABLE IF EXISTS sns_metrics;
-CREATE TEMP TABLE sns_metrics AS (
-    SELECT 
-        b.asin,
-        b.gl_product_group,
-        b.company_code,
-        b.promo_start_date,
-        b.promo_end_date,
-        b.event_name,
-        b.event_month,
-        b.event_year,
-        -- ASIN level
-        b.avg_deal_sns_subscribers,
-        b.avg_pre_deal_sns_subscribers,
-        -- Company level
-        c.sum_deal_sns_subscribers_company,
-        c.sum_pre_deal_sns_subscribers_company,
-        -- Product Line level
-        p.sum_deal_sns_subscribers_pl,
-        p.sum_pre_deal_sns_subscribers_pl
-    FROM base_sns_avg b
-        LEFT JOIN company_sns_sums c
-            ON b.company_code = c.company_code
-            AND b.promo_start_date = c.promo_start_date
-            AND b.event_name = c.event_name
-        LEFT JOIN pl_sns_sums p
-            ON b.gl_product_group  = p.gl_product_group
-            AND b.promo_start_date = p.promo_start_date
-            AND b.event_name = p.event_name
-);
-
-
-/*************************
-Compare deal vs pre deal periods
-*************************/
-DROP TABLE IF EXISTS deal_growth;
-CREATE TEMP TABLE deal_growth AS (
-    SELECT 
-        -- Base ASIN info
-        d.asin,
-        d.item_name,
-        (CASE 
-            WHEN d.gl_product_group = 510 THEN 'Lux Beauty'
-            WHEN d.gl_product_group = 364 THEN 'Personal Care Appliances'    
-            WHEN d.gl_product_group = 325 THEN 'Grocery'
-            WHEN d.gl_product_group = 199 THEN 'Pet'
-            WHEN d.gl_product_group = 194 THEN 'Beauty'
-            WHEN d.gl_product_group = 121 THEN 'HPC'
-            WHEN d.gl_product_group = 75 THEN 'Baby'    
-        END) as gl_product_group_name,
-        d.gl_product_group,
-        d.vendor_code,
-        v.company_name,
-        v.company_code, 
-        d.brand_code,
-        d.brand_name,
-        d.event_name,
-
-        -- Period info
-        d.promo_start_date,
-        d.promo_end_date,
-        d.event_month,
-        d.event_year,  
-        d.event_duration_days,
-
-        -- ASIN level metrics during deal
-        d.daily_deal_shipped_units,
-        d.daily_deal_ops,  
-        d.daily_deal_subscription_revenue_amt,
-        d.daily_deal_total_customers_asin,
-        d.daily_deal_new_customers_asin,    
-        d.daily_deal_return_customers_asin,
-        s.avg_deal_sns_subscribers as daily_deal_sns_subscribers_asin,
-        
-        -- Brand level metrics during deal
-        d.daily_deal_total_customers_brand,
-        d.daily_deal_new_customers_brand,
-        d.daily_deal_return_customers_brand,
-        
-        -- Company level metrics during deal
-        d.daily_deal_total_customers_company,
-        d.daily_deal_new_customers_company,
-        d.daily_deal_return_customers_company,
-        d.daily_deal_shipped_units_company,
-        d.daily_deal_revenue_company,
-        d.daily_deal_subscription_revenue_company,
-        s.sum_deal_sns_subscribers_company as total_deal_sns_subscribers_company,
-        s.sum_deal_sns_subscribers_company/d.event_duration_days as daily_deal_sns_subscribers_company,
-        
-        -- GL level metrics during deal
-        d.daily_deal_total_customers_gl,
-        d.daily_deal_new_customers_gl,
-        d.daily_deal_return_customers_gl,
-        d.daily_deal_shipped_units_gl,
-        d.daily_deal_revenue_gl,
-        d.daily_deal_subscription_revenue_gl,
-        s.sum_deal_sns_subscribers_pl as total_deal_sns_subscribers_gl,
-        s.sum_deal_sns_subscribers_pl/d.event_duration_days as daily_deal_sns_subscribers_gl,
-
-        -- ASIN level metrics pre-deal
-        p.daily_pre_deal_shipped_units,
-        p.daily_pre_deal_revenue,
-        p.daily_pre_deal_subscription_revenue_amt,
-        p.daily_pre_deal_total_customers_asin,
-        p.daily_pre_deal_new_customers_asin,    
+        d.*,
+        p.daily_pre_deal_shipped_units_asin,
+        p.daily_pre_deal_revenue_asin,
+        p.daily_pre_deal_subscription_revenue_asin,
+        p.daily_pre_deal_customers_asin,
+        p.daily_pre_deal_new_customers_asin,
         p.daily_pre_deal_return_customers_asin,
-        s.avg_pre_deal_sns_subscribers as daily_pre_deal_sns_subscribers_asin,
-        
-        -- Brand level metrics pre-deal
-        p.daily_pre_deal_total_customers_brand,
-        p.daily_pre_deal_new_customers_brand,
-        p.daily_pre_deal_return_customers_brand,
-        
-        -- Company level metrics pre-deal
-        p.daily_pre_deal_total_customers_company,
-        p.daily_pre_deal_new_customers_company,
-        p.daily_pre_deal_return_customers_company,
-        p.daily_pre_deal_shipped_units_company,
-        p.daily_pre_deal_revenue_company,
-        p.daily_pre_deal_subscription_revenue_company,
-        s.sum_pre_deal_sns_subscribers_company as total_pre_deal_sns_subscribers_company,
-        s.sum_pre_deal_sns_subscribers_company/91 as daily_pre_deal_sns_subscribers_company,
-        
-        -- GL level metrics pre-deal
-        p.daily_pre_deal_total_customers_gl,
-        p.daily_pre_deal_new_customers_gl,
-        p.daily_pre_deal_return_customers_gl,
-        p.daily_pre_deal_shipped_units_gl,
-        p.daily_pre_deal_revenue_gl,
-        p.daily_pre_deal_subscription_revenue_gl,
-        s.sum_pre_deal_sns_subscribers_pl as total_pre_deal_sns_subscribers_gl,
-        s.sum_pre_deal_sns_subscribers_pl/91 as daily_pre_deal_sns_subscribers_gl
-
-    FROM deal_metrics d
-        LEFT JOIN pre_deal_metrics p
+        -- Add SNS metrics (these are already daily averages from the sns_metrics table)
+        s.avg_deal_sns_subscribers as daily_deal_sns_subscribers_asin,
+        s.avg_pre_deal_sns_subscribers as daily_pre_deal_sns_subscribers_asin
+    FROM asin_deal_base d
+        LEFT JOIN asin_pre_deal_base p
             ON d.asin = p.asin
             AND d.event_name = p.event_name
-            AND d.promo_start_date = p.promo_start_date
-            AND d.event_month = p.event_month
             AND d.event_year = p.event_year
         LEFT JOIN sns_metrics s
             ON d.asin = s.asin
             AND d.event_name = s.event_name
-            AND d.promo_start_date = s.promo_start_date
-        LEFT JOIN andes.roi_ml_ddl.VENDOR_COMPANY_CODES v
-            ON v.vendor_code = d.vendor_code
-    WHERE d.promo_start_date IS NOT NULL
-    ORDER BY 
-        d.promo_start_date DESC,
-        d.daily_deal_ops * d.event_duration_days DESC
+            AND d.event_year = s.event_year
 );
 
-
-/*************************
-Intermediary table for final output
-*************************/
-DROP TABLE IF EXISTS combined_data;
-CREATE TEMP TABLE combined_data AS (
+-- 4. Add delta calculations (these are already daily numbers, so can subtract directly)
+DROP TABLE IF EXISTS asin_metrics_with_deltas;
+CREATE TEMP TABLE asin_metrics_with_deltas AS (
     SELECT 
-        dds.asin, 
-        dds.item_name,
-        dds.gl_product_group,
-        dds.brand_code,
-        dds.brand_name,
-        dds.event_name,
-        dds.promo_start_date,
-        dds.promo_end_date,
-        dds.event_month,
-        dds.event_year,
-        dds.event_duration_days,
-        dds.period_type,
-        dds.order_date,
-        dds.customer_id,
-        dds.is_first_brand_purchase,
-        dds.shipped_units,
-        dds.revenue_share_amt,
-        dds.subscription_revenue_amt
-    FROM deal_daily_summary dds
-    
-    UNION ALL
-    
-    SELECT 
-        pds.asin, 
-        pds.item_name,
-        pds.gl_product_group,
-        pds.brand_code,
-        pds.brand_name,
-        pds.event_name,
-        pds.promo_start_date,
-        pds.promo_end_date,
-        pds.event_month,
-        pds.event_year,
-        91 as event_duration_days,
-        pds.period_type,
-        pds.order_date,
-        pds.customer_id,
-        pds.is_first_brand_purchase,
-        pds.shipped_units,
-        pds.revenue_share_amt,
-        pds.subscription_revenue_amt
-    FROM pre_deal_daily_summary pds
+        *,
+        daily_deal_shipped_units_asin - daily_pre_deal_shipped_units_asin as delta_daily_shipped_units_asin,
+        daily_deal_revenue_asin - daily_pre_deal_revenue_asin as delta_daily_revenue_asin,
+        daily_deal_customers_asin - daily_pre_deal_customers_asin as delta_daily_customers_asin,
+        daily_deal_new_customers_asin - daily_pre_deal_new_customers_asin as delta_daily_new_customers_asin,
+        daily_deal_return_customers_asin - daily_pre_deal_return_customers_asin as delta_daily_return_customers_asin,
+        daily_deal_sns_subscribers_asin - daily_pre_deal_sns_subscribers_asin as delta_daily_sns_subscribers_asin
+    FROM asin_combined_metrics
 );
 
+-- 5. Final ASIN metrics with last year comparison
+DROP TABLE IF EXISTS final_asin_metrics;
+CREATE TEMP TABLE final_asin_metrics AS (
+    SELECT 
+        curr.*,
+        -- Last year metrics (these are already daily averages)
+        ly.daily_deal_shipped_units_asin as ly_daily_deal_shipped_units_asin,
+        ly.daily_deal_revenue_asin as ly_daily_deal_revenue_asin,
+        ly.daily_deal_customers_asin as ly_daily_deal_customers_asin,
+        ly.daily_deal_new_customers_asin as ly_daily_deal_new_customers_asin,
+        ly.daily_deal_return_customers_asin as ly_daily_deal_return_customers_asin,
+        ly.daily_pre_deal_shipped_units_asin as ly_daily_pre_deal_shipped_units_asin,
+        ly.daily_pre_deal_revenue_asin as ly_daily_pre_deal_revenue_asin,
+        ly.daily_pre_deal_customers_asin as ly_daily_pre_deal_customers_asin,
+        ly.daily_pre_deal_new_customers_asin as ly_daily_pre_deal_new_customers_asin,
+        ly.daily_pre_deal_return_customers_asin as ly_daily_pre_deal_return_customers_asin,
+        -- Last year SNS metrics
+        ly_sns.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers_asin,
+        ly_sns.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers_asin
+    FROM asin_metrics_with_deltas curr
+        LEFT JOIN asin_metrics_with_deltas ly
+            ON curr.asin = ly.asin
+            AND curr.event_name = ly.event_name
+            AND curr.event_year = ly.event_year + 1
+        LEFT JOIN sns_metrics ly_sns
+            ON curr.asin = ly_sns.asin
+            AND curr.event_name = ly_sns.event_name
+            AND curr.event_year - 1 = ly_sns.event_year
+);
 
 
 /*************************
@@ -923,598 +677,420 @@ Final table creation
 -- 1. ASIN Level Analysis
 DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_asin_level;
 CREATE TABLE pm_sandbox_aqxiao.ntb_asin_level AS (
-
-    with cte as (
-        SELECT 
-            -- Base ASIN info
-            d.asin,
-            d.item_name,
-            d.gl_product_group,
-            (CASE 
-                WHEN d.gl_product_group = 510 THEN 'Lux Beauty'
-                WHEN d.gl_product_group = 364 THEN 'Personal Care Appliances'    
-                WHEN d.gl_product_group = 325 THEN 'Grocery'
-                WHEN d.gl_product_group = 199 THEN 'Pet'
-                WHEN d.gl_product_group = 194 THEN 'Beauty'
-                WHEN d.gl_product_group = 121 THEN 'HPC'
-                WHEN d.gl_product_group = 75 THEN 'Baby'    
-            END) as gl_product_group_name,
-            d.brand_code,
-            d.brand_name,
-            d.event_name,
-            d.event_year,
-            d.event_duration_days,
-            
-            -- Deal Period Metrics
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END) as deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days as daily_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END) as deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days as daily_deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END) as deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days as daily_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END) as deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days as daily_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days as daily_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days as daily_deal_return_customers,
-            s.avg_deal_sns_subscribers as daily_deal_sns_subscribers,
-            
-            -- Pre-Deal Period Metrics
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END) as pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91 as daily_pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END) as pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91 as daily_pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END) as pre_deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91 as daily_pre_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END) as pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as pre_deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers,
-            
-            -- sns
-            s.avg_pre_deal_sns_subscribers as daily_pre_deal_sns_subscribers,
-
-            -- Add delta calculations
-            (SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91) as delta_daily_shipped_units,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91) as delta_daily_revenue,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91) as delta_daily_subscription_revenue,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91) as delta_daily_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91) as delta_daily_new_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91) as delta_daily_return_customers,
-            (s.avg_deal_sns_subscribers - s.avg_pre_deal_sns_subscribers) as delta_daily_sns_subscribers
-
-        FROM combined_data d
-            LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam 
-                ON mam.asin = d.asin 
-                AND mam.marketplace_id = 7 
-                AND mam.region_id = 1
-            LEFT JOIN andes.roi_ml_ddl.vendor_company_codes v 
-                ON mam.dama_mfg_vendor_code = v.vendor_code
-            LEFT JOIN sns_metrics s
-                ON d.asin = s.asin
-                AND d.event_name = s.event_name
-                AND s.event_year = d.event_year
-
-        GROUP BY 
-            d.asin,
-            d.item_name,
-            d.gl_product_group,
-            d.brand_code,
-            d.brand_name,
-            d.event_name,
-            d.event_year,
-            d.event_duration_days,
-            s.avg_deal_sns_subscribers,
-            s.avg_pre_deal_sns_subscribers
-    )
-
-    select 
-        cte.*,
-        -- Last year metrics
-        -- deal
-        ly.daily_deal_shipped_units as ly_daily_deal_shipped_units,
-        ly.daily_deal_revenue as ly_daily_deal_revenue,
-        ly.daily_deal_subscription_revenue as ly_daily_deal_subscription_revenue,
-        ly.daily_deal_customers as ly_daily_deal_customers,
-        ly.daily_deal_new_customers as ly_daily_deal_new_customers,
-        ly.daily_deal_return_customers as ly_daily_deal_return_customers,
-        -- pre deal
-        ly.daily_pre_deal_shipped_units as ly_daily_pre_deal_shipped_units,
-        ly.daily_pre_deal_revenue as ly_daily_pre_deal_revenue,
-        ly.daily_pre_deal_subscription_revenue as ly_daily_pre_deal_subscription_revenue,
-        ly.daily_pre_deal_customers as ly_daily_pre_deal_customers,
-        ly.daily_pre_deal_new_customers as ly_daily_pre_deal_new_customers,
-        ly.daily_pre_deal_return_customers as ly_daily_pre_deal_return_customers,
-        -- sns
-        s_ly.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers,
-        s_ly.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers,
-        -- Last year delta calculations
-        ly.delta_daily_shipped_units as ly_delta_daily_shipped_units,
-        ly.delta_daily_revenue as ly_delta_daily_revenue,
-        ly.delta_daily_subscription_revenue as ly_delta_daily_subscription_revenue,
-        ly.delta_daily_customers as ly_delta_daily_customers,
-        ly.delta_daily_new_customers as ly_delta_daily_new_customers,
-        ly.delta_daily_return_customers as ly_delta_daily_return_customers,
-        (s_ly.avg_deal_sns_subscribers - s_ly.avg_pre_deal_sns_subscribers) as ly_delta_daily_sns_subscribers
-
-    from cte
-        LEFT JOIN sns_metrics s_ly
-            ON cte.asin = s_ly.asin
-            AND cte.event_name = s_ly.event_name
-            AND cte.event_year - 1 = s_ly.event_year
-        LEFT JOIN pm_sandbox_aqxiao.ntb_asin_level ly
-            ON cte.asin = ly.asin
-            AND cte.event_name = ly.event_name
-            AND cte.event_year - 1 = ly.event_year
-)
-;
+    SELECT 
+        -- Base ASIN info
+        asin,
+        item_name,
+        -- gl
+        gl_product_group,
+        gl_product_group_name,
+        -- vendor/company
+        vendor_code,
+        company_name,
+        company_code,
+        brand_code,
+        brand_name,
+        -- event info
+        event_name,
+        event_year,
+        event_duration_days,
+        
+        -- Deal Period Metrics
+        daily_deal_shipped_units_asin,
+        daily_deal_revenue_asin,
+        daily_deal_subscription_revenue_asin,
+        daily_deal_customers_asin,
+        daily_deal_new_customers_asin,
+        daily_deal_return_customers_asin,
+        daily_deal_sns_subscribers_asin,
+        
+        -- Pre-Deal Period Metrics
+        daily_pre_deal_shipped_units_asin,
+        daily_pre_deal_revenue_asin,
+        daily_pre_deal_subscription_revenue_asin,
+        daily_pre_deal_customers_asin,
+        daily_pre_deal_new_customers_asin,
+        daily_pre_deal_return_customers_asin,
+        daily_pre_deal_sns_subscribers_asin,
+        
+        -- Delta Metrics
+        delta_daily_shipped_units_asin,
+        delta_daily_revenue_asin,
+        delta_daily_customers_asin,
+        delta_daily_new_customers_asin,
+        delta_daily_return_customers_asin,
+        delta_daily_sns_subscribers_asin,
+        
+        -- Last Year Metrics
+        ly_daily_deal_shipped_units_asin,
+        ly_daily_deal_revenue_asin,
+        ly_daily_deal_customers_asin,
+        ly_daily_deal_new_customers_asin,
+        ly_daily_deal_return_customers_asin,
+        ly_daily_pre_deal_shipped_units_asin,
+        ly_daily_pre_deal_revenue_asin,
+        ly_daily_pre_deal_customers_asin,
+        ly_daily_pre_deal_new_customers_asin,
+        ly_daily_pre_deal_return_customers_asin,
+        ly_daily_deal_sns_subscribers_asin,
+        ly_daily_pre_deal_sns_subscribers_asin
+    FROM final_asin_metrics
+);
 
 -- 2. Brand Level Analysis
 DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_brand_level;
 CREATE TABLE pm_sandbox_aqxiao.ntb_brand_level AS (
-    with cte as (
+    WITH cte AS (
         SELECT 
-            -- Base Brand info
+            -- Brand info
             d.brand_code,
             d.brand_name,
+            -- gl
+            d.gl_product_group,
+            d.gl_product_group_name,
+            -- vendor/company
+            d.vendor_code,
+            d.company_name,
+            d.company_code,
+            -- event info
             d.event_name,
             d.event_year,
             d.event_duration_days,
             
             -- Deal Period Metrics
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END) as deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days as daily_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END) as deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days as daily_deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END) as deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days as daily_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END) as deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days as daily_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days as daily_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days as daily_deal_return_customers,
-            SUM(s.avg_deal_sns_subscribers) as daily_deal_sns_subscribers,
-            
+            s.avg_deal_sns_subscribers as daily_deal_sns_subscribers_brand,
+            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days as daily_deal_shipped_units_brand,
+            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days as daily_deal_revenue_brand,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days as daily_deal_customers_brand,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days as daily_deal_new_customers_brand,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days as daily_deal_return_customers_brand,
+
             -- Pre-Deal Period Metrics
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END) as pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91 as daily_pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END) as pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91 as daily_pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END) as pre_deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91 as daily_pre_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END) as pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as pre_deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers,
+            s.avg_pre_deal_sns_subscribers as daily_pre_deal_sns_subscribers_brand,
+            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91 as daily_pre_deal_shipped_units_brand,
+            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91 as daily_pre_deal_revenue_brand,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_customers_brand,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers_brand,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers_brand
             
-            -- sns
-            SUM(s.avg_pre_deal_sns_subscribers) as daily_pre_deal_sns_subscribers,
-
-            -- Add delta calculations
-            (SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days - 
-             SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91) as delta_daily_shipped_units,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days - 
-             SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91) as delta_daily_revenue,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days - 
-             SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91) as delta_daily_subscription_revenue,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days - 
-             COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91) as delta_daily_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days - 
-             COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91) as delta_daily_new_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days - 
-             COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91) as delta_daily_return_customers,
-            (SUM(s.avg_deal_sns_subscribers) - SUM(s.avg_pre_deal_sns_subscribers)) as delta_daily_sns_subscribers
-
         FROM combined_data d
             LEFT JOIN sns_metrics s
-                ON d.asin = s.asin
+                ON d.brand_code = s.brand_code
                 AND d.event_name = s.event_name
                 AND s.event_year = d.event_year
-
+        WHERE d.brand_code IS NOT NULL
         GROUP BY 
             d.brand_code,
             d.brand_name,
+            d.gl_product_group,
+            d.gl_product_group_name,
+            d.vendor_code,
+            d.company_name,
+            d.company_code,
             d.event_name,
             d.event_year,
-            d.event_duration_days
+            d.event_duration_days,
+            s.avg_pre_deal_sns_subscribers,
+            s.avg_deal_sns_subscribers
+    ),
+
+    cte2 as (
+        SELECT 
+            cte.*,
+            -- Add delta calculations
+            daily_deal_shipped_units_brand - daily_pre_deal_shipped_units_brand as delta_daily_shipped_units_brand,
+            daily_deal_revenue_brand - daily_pre_deal_revenue_brand as delta_daily_revenue_brand,
+            daily_deal_customers_brand - daily_pre_deal_customers_brand as delta_daily_customers_brand,
+            daily_deal_new_customers_brand - daily_pre_deal_new_customers_brand as delta_daily_new_customers_brand,
+            daily_deal_return_customers_brand - daily_pre_deal_return_customers_brand as delta_daily_return_customers_brand,
+            daily_deal_sns_subscribers_brand - daily_pre_deal_sns_subscribers_brand as delta_daily_sns_subscribers_brand
+        FROM cte
     )
 
-    select 
-        cte.*,
-        -- Last year metrics
+    SELECT 
+        cte2.*,
         -- deal
-        ly.daily_deal_shipped_units as ly_daily_deal_shipped_units,
-        ly.daily_deal_revenue as ly_daily_deal_revenue,
-        ly.daily_deal_subscription_revenue as ly_daily_deal_subscription_revenue,
-        ly.daily_deal_customers as ly_daily_deal_customers,
-        ly.daily_deal_new_customers as ly_daily_deal_new_customers,
-        ly.daily_deal_return_customers as ly_daily_deal_return_customers,
+        ly.daily_deal_shipped_units_brand as ly_daily_deal_shipped_units_brand,
+        ly.daily_deal_revenue_brand as ly_daily_deal_revenue_brand,
+        ly.daily_deal_customers_brand as ly_daily_deal_customers_brand,
+        ly.daily_deal_new_customers_brand as ly_daily_deal_new_customers_brand,
+        ly.daily_deal_return_customers_brand as ly_daily_deal_return_customers_brand,
         -- pre deal
-        ly.daily_pre_deal_shipped_units as ly_daily_pre_deal_shipped_units,
-        ly.daily_pre_deal_revenue as ly_daily_pre_deal_revenue,
-        ly.daily_pre_deal_subscription_revenue as ly_daily_pre_deal_subscription_revenue,
-        ly.daily_pre_deal_customers as ly_daily_pre_deal_customers,
-        ly.daily_pre_deal_new_customers as ly_daily_pre_deal_new_customers,
-        ly.daily_pre_deal_return_customers as ly_daily_pre_deal_return_customers,
-        -- sns
-        s_ly.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers,
-        s_ly.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers,
-        -- Last year delta calculations
-        ly.delta_daily_shipped_units as ly_delta_daily_shipped_units,
-        ly.delta_daily_revenue as ly_delta_daily_revenue,
-        ly.delta_daily_subscription_revenue as ly_delta_daily_subscription_revenue,
-        ly.delta_daily_customers as ly_delta_daily_customers,
-        ly.delta_daily_new_customers as ly_delta_daily_new_customers,
-        ly.delta_daily_return_customers as ly_delta_daily_return_customers,
-        (s_ly.avg_deal_sns_subscribers - s_ly.avg_pre_deal_sns_subscribers) as ly_delta_daily_sns_subscribers
-
-    from cte
+        ly.daily_pre_deal_shipped_units_brand as ly_daily_pre_deal_shipped_units_brand,
+        ly.daily_pre_deal_revenue_brand as ly_daily_pre_deal_revenue_brand,
+        ly.daily_pre_deal_customers_brand as ly_daily_pre_deal_customers_brand,
+        ly.daily_pre_deal_new_customers_brand as ly_daily_pre_deal_new_customers_brand,
+        ly.daily_pre_deal_return_customers_brand as ly_daily_pre_deal_return_customers_brand,
+        -- sns        
+        s_ly.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers_brand,
+        s_ly.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers_brand
+    FROM cte2
         LEFT JOIN sns_metrics s_ly
-            ON cte.brand_code = s_ly.brand_code
-            AND cte.event_name = s_ly.event_name
-            AND cte.event_year - 1 = s_ly.event_year
-        LEFT JOIN pm_sandbox_aqxiao.ntb_brand_level ly
-            ON cte.brand_code = ly.brand_code
-            AND cte.event_name = ly.event_name
-            AND cte.event_year - 1 = ly.event_year
+            ON cte2.brand_code = s_ly.brand_code
+            AND cte2.event_name = s_ly.event_name
+            AND cte2.event_year - 1 = s_ly.event_year
+        LEFT JOIN cte2 ly
+            ON cte2.brand_code = ly.brand_code
+            AND cte2.event_name = ly.event_name
+            AND cte2.event_year - 1 = ly.event_year
 );
-
-    
-
 
 -- 3. Company Level Analysis
--- Same company is treated at different entities at different GLs
 DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_company_level;
 CREATE TABLE pm_sandbox_aqxiao.ntb_company_level AS (
-    with cte as (
-    SELECT
-    -- Base Company info
-    v.vendor_code as company_code,
-    v.vendor_name as company_name,
-    d.event_name,
-    d.event_year,
-    d.event_duration_days,
-
+    WITH cte AS (
+        SELECT 
+            -- Company info
+            d.company_code,
+            d.company_name,
+            -- gl
+            d.gl_product_group,
+            d.gl_product_group_name,
+            -- event info
+            d.event_name,
+            d.event_year,
+            d.event_duration_days,
+            
             -- Deal Period Metrics
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END) as deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days as daily_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END) as deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days as daily_deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END) as deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days as daily_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END) as deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days as daily_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days as daily_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days as daily_deal_return_customers,
-            SUM(s.avg_deal_sns_subscribers) as daily_deal_sns_subscribers,
-            
+            avg(s.avg_deal_sns_subscribers) as daily_deal_sns_subscribers_company,
+            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days as daily_deal_shipped_units_company,
+            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days as daily_deal_revenue_company,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days as daily_deal_customers_company,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days as daily_deal_new_customers_company,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days as daily_deal_return_customers_company,
+
             -- Pre-Deal Period Metrics
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END) as pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91 as daily_pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END) as pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91 as daily_pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END) as pre_deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91 as daily_pre_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END) as pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as pre_deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers,
+            avg(s.avg_pre_deal_sns_subscribers) as daily_pre_deal_sns_subscribers_company,
+            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91 as daily_pre_deal_shipped_units_company,
+            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91 as daily_pre_deal_revenue_company,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_customers_company,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers_company,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers_company
             
-            -- sns
-            SUM(s.avg_pre_deal_sns_subscribers) as daily_pre_deal_sns_subscribers,
-
-            -- Add delta calculations
-            (SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91) as delta_daily_shipped_units,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91) as delta_daily_revenue,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91) as delta_daily_subscription_revenue,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91) as delta_daily_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91) as delta_daily_new_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91) as delta_daily_return_customers,
-            (SUM(s.avg_deal_sns_subscribers) - SUM(s.avg_pre_deal_sns_subscribers)) as delta_daily_sns_subscribers
-
         FROM combined_data d
-            LEFT JOIN andes.BOOKER.D_MP_ASIN_MANUFACTURER mam 
-                ON mam.asin = d.asin 
-                AND mam.marketplace_id = 7 
-                AND mam.region_id = 1
-            LEFT JOIN andes.roi_ml_ddl.vendor_company_codes v 
-                ON mam.dama_mfg_vendor_code = v.vendor_code
             LEFT JOIN sns_metrics s
-                ON d.asin = s.asin
+                ON d.company_code = s.company_code
                 AND d.event_name = s.event_name
                 AND s.event_year = d.event_year
-
+        WHERE d.company_code IS NOT NULL
         GROUP BY 
-            v.vendor_code,
-            v.vendor_name,
+            d.company_code,
+            d.company_name,
+            d.gl_product_group,
+            d.gl_product_group_name,
             d.event_name,
             d.event_year,
             d.event_duration_days
+    ),
+
+    cte2 as (
+        SELECT 
+            cte.*,
+            -- Add delta calculations
+            daily_deal_shipped_units_company - daily_pre_deal_shipped_units_company as delta_daily_shipped_units_company,
+            daily_deal_revenue_company - daily_pre_deal_revenue_company as delta_daily_revenue_company,
+            daily_deal_customers_company - daily_pre_deal_customers_company as delta_daily_customers_company,
+            daily_deal_new_customers_company - daily_pre_deal_new_customers_company as delta_daily_new_customers_company,
+            daily_deal_return_customers_company - daily_pre_deal_return_customers_company as delta_daily_return_customers_company,
+            daily_deal_sns_subscribers_company - daily_pre_deal_sns_subscribers_company as delta_daily_sns_subscribers_company
+        FROM cte
     )
 
-    select 
-        cte.*,
-        -- Last year metrics
+    SELECT 
+        cte2.*,
         -- deal
-        ly.daily_deal_shipped_units as ly_daily_deal_shipped_units,
-        ly.daily_deal_revenue as ly_daily_deal_revenue,
-        ly.daily_deal_subscription_revenue as ly_daily_deal_subscription_revenue,
-        ly.daily_deal_customers as ly_daily_deal_customers,
-        ly.daily_deal_new_customers as ly_daily_deal_new_customers,
-        ly.daily_deal_return_customers as ly_daily_deal_return_customers,
+        ly.daily_deal_shipped_units_company as ly_daily_deal_shipped_units_company,
+        ly.daily_deal_revenue_company as ly_daily_deal_revenue_company,
+        ly.daily_deal_customers_company as ly_daily_deal_customers_company,
+        ly.daily_deal_new_customers_company as ly_daily_deal_new_customers_company,
+        ly.daily_deal_return_customers_company as ly_daily_deal_return_customers_company,
         -- pre deal
-        ly.daily_pre_deal_shipped_units as ly_daily_pre_deal_shipped_units,
-        ly.daily_pre_deal_revenue as ly_daily_pre_deal_revenue,
-        ly.daily_pre_deal_subscription_revenue as ly_daily_pre_deal_subscription_revenue,
-        ly.daily_pre_deal_customers as ly_daily_pre_deal_customers,
-        ly.daily_pre_deal_new_customers as ly_daily_pre_deal_new_customers,
-        ly.daily_pre_deal_return_customers as ly_daily_pre_deal_return_customers,
-        -- sns
-        s_ly.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers,
-        s_ly.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers,
-        -- Last year delta calculations
-        ly.delta_daily_shipped_units as ly_delta_daily_shipped_units,
-        ly.delta_daily_revenue as ly_delta_daily_revenue,
-        ly.delta_daily_subscription_revenue as ly_delta_daily_subscription_revenue,
-        ly.delta_daily_customers as ly_delta_daily_customers,
-        ly.delta_daily_new_customers as ly_delta_daily_new_customers,
-        ly.delta_daily_return_customers as ly_delta_daily_return_customers,
-        (s_ly.avg_deal_sns_subscribers - s_ly.avg_pre_deal_sns_subscribers) as ly_delta_daily_sns_subscribers
-
-    from cte
+        ly.daily_pre_deal_shipped_units_company as ly_daily_pre_deal_shipped_units_company,
+        ly.daily_pre_deal_revenue_company as ly_daily_pre_deal_revenue_company,
+        ly.daily_pre_deal_customers_company as ly_daily_pre_deal_customers_company,
+        ly.daily_pre_deal_new_customers_company as ly_daily_pre_deal_new_customers_company,
+        ly.daily_pre_deal_return_customers_company as ly_daily_pre_deal_return_customers_company,
+        -- sns        
+        s_ly.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers_company,
+        s_ly.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers_company
+    FROM cte2
         LEFT JOIN sns_metrics s_ly
-            ON cte.company_code = s_ly.company_code
-            AND cte.event_name = s_ly.event_name
-            AND cte.event_year - 1 = s_ly.event_year
-        LEFT JOIN pm_sandbox_aqxiao.ntb_company_level ly
-            ON cte.company_code = ly.company_code
-            AND cte.event_name = ly.event_name
-            AND cte.event_year - 1 = ly.event_year
+            ON cte2.company_code = s_ly.company_code
+            AND cte2.event_name = s_ly.event_name
+            AND cte2.event_year - 1 = s_ly.event_year
+        LEFT JOIN cte2 ly
+            ON cte2.company_code = ly.company_code
+            AND cte2.event_name = ly.event_name
+            AND cte2.event_year - 1 = ly.event_year
 );
-
 
 -- 4. GL Level Analysis
 DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_gl_level;
 CREATE TABLE pm_sandbox_aqxiao.ntb_gl_level AS (
-    with cte as (
-    SELECT
-    -- Base GL info
-    d.gl_product_group,
-    d.gl_product_group_name,
-    d.event_name,
-    d.event_year,
-    d.event_duration_days,
-
+    WITH cte AS (
+        SELECT 
+            -- GL info
+            d.gl_product_group,
+            d.gl_product_group_name,
+            -- event info
+            d.event_name,
+            d.event_year,
+            d.event_duration_days,
+            
             -- Deal Period Metrics
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END) as deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days as daily_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END) as deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days as daily_deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END) as deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days as daily_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END) as deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days as daily_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days as daily_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days as daily_deal_return_customers,
-            SUM(s.avg_deal_sns_subscribers) as daily_deal_sns_subscribers,
-            
+            avg(s.avg_deal_sns_subscribers) as daily_deal_sns_subscribers_gl,
+            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days as daily_deal_shipped_units_gl,
+            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days as daily_deal_revenue_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days as daily_deal_customers_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days as daily_deal_new_customers_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days as daily_deal_return_customers_gl,
+
             -- Pre-Deal Period Metrics
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END) as pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91 as daily_pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END) as pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91 as daily_pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END) as pre_deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91 as daily_pre_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END) as pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as pre_deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers,
+            avg(s.avg_pre_deal_sns_subscribers) as daily_pre_deal_sns_subscribers_gl,
+            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91 as daily_pre_deal_shipped_units_gl,
+            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91 as daily_pre_deal_revenue_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_customers_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers_gl
             
-            -- sns
-            SUM(s.avg_pre_deal_sns_subscribers) as daily_pre_deal_sns_subscribers,
-
-            -- Add delta calculations
-            (SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91) as delta_daily_shipped_units,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91) as delta_daily_revenue,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91) as delta_daily_subscription_revenue,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91) as delta_daily_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91) as delta_daily_new_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91) as delta_daily_return_customers,
-            (SUM(s.avg_deal_sns_subscribers) - SUM(s.avg_pre_deal_sns_subscribers)) as delta_daily_sns_subscribers
-
         FROM combined_data d
             LEFT JOIN sns_metrics s
-                ON d.asin = s.asin
+                ON d.gl_product_group = s.gl_product_group
                 AND d.event_name = s.event_name
                 AND s.event_year = d.event_year
-
+        WHERE d.gl_product_group IS NOT NULL
         GROUP BY 
             d.gl_product_group,
             d.gl_product_group_name,
             d.event_name,
             d.event_year,
             d.event_duration_days
+    ),
+
+    cte2 as (
+        SELECT 
+            cte.*,
+            -- Add delta calculations
+            daily_deal_shipped_units_gl - daily_pre_deal_shipped_units_gl as delta_daily_shipped_units_gl,
+            daily_deal_revenue_gl - daily_pre_deal_revenue_gl as delta_daily_revenue_gl,
+            daily_deal_customers_gl - daily_pre_deal_customers_gl as delta_daily_customers_gl,
+            daily_deal_new_customers_gl - daily_pre_deal_new_customers_gl as delta_daily_new_customers_gl,
+            daily_deal_return_customers_gl - daily_pre_deal_return_customers_gl as delta_daily_return_customers_gl,
+            daily_deal_sns_subscribers_gl - daily_pre_deal_sns_subscribers_gl as delta_daily_sns_subscribers_gl
+        FROM cte
     )
 
-    select 
-        cte.*,
-        -- Last year metrics
+    SELECT 
+        cte2.*,
         -- deal
-        ly.daily_deal_shipped_units as ly_daily_deal_shipped_units,
-        ly.daily_deal_revenue as ly_daily_deal_revenue,
-        ly.daily_deal_subscription_revenue as ly_daily_deal_subscription_revenue,
-        ly.daily_deal_customers as ly_daily_deal_customers,
-        ly.daily_deal_new_customers as ly_daily_deal_new_customers,
-        ly.daily_deal_return_customers as ly_daily_deal_return_customers,
+        ly.daily_deal_shipped_units_gl as ly_daily_deal_shipped_units_gl,
+        ly.daily_deal_revenue_gl as ly_daily_deal_revenue_gl,
+        ly.daily_deal_customers_gl as ly_daily_deal_customers_gl,
+        ly.daily_deal_new_customers_gl as ly_daily_deal_new_customers_gl,
+        ly.daily_deal_return_customers_gl as ly_daily_deal_return_customers_gl,
         -- pre deal
-        ly.daily_pre_deal_shipped_units as ly_daily_pre_deal_shipped_units,
-        ly.daily_pre_deal_revenue as ly_daily_pre_deal_revenue,
-        ly.daily_pre_deal_subscription_revenue as ly_daily_pre_deal_subscription_revenue,
-        ly.daily_pre_deal_customers as ly_daily_pre_deal_customers,
-        ly.daily_pre_deal_new_customers as ly_daily_pre_deal_new_customers,
-        ly.daily_pre_deal_return_customers as ly_daily_pre_deal_return_customers,
-        -- sns
-        s_ly.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers,
-        s_ly.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers,
-        -- Last year delta calculations
-        ly.delta_daily_shipped_units as ly_delta_daily_shipped_units,
-        ly.delta_daily_revenue as ly_delta_daily_revenue,
-        ly.delta_daily_subscription_revenue as ly_delta_daily_subscription_revenue,
-        ly.delta_daily_customers as ly_delta_daily_customers,
-        ly.delta_daily_new_customers as ly_delta_daily_new_customers,
-        ly.delta_daily_return_customers as ly_delta_daily_return_customers,
-        (s_ly.avg_deal_sns_subscribers - s_ly.avg_pre_deal_sns_subscribers) as ly_delta_daily_sns_subscribers
-
-    from cte
+        ly.daily_pre_deal_shipped_units_gl as ly_daily_pre_deal_shipped_units_gl,
+        ly.daily_pre_deal_revenue_gl as ly_daily_pre_deal_revenue_gl,
+        ly.daily_pre_deal_customers_gl as ly_daily_pre_deal_customers_gl,
+        ly.daily_pre_deal_new_customers_gl as ly_daily_pre_deal_new_customers_gl,
+        ly.daily_pre_deal_return_customers_gl as ly_daily_pre_deal_return_customers_gl,
+        -- sns        
+        s_ly.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers_gl,
+        s_ly.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers_gl
+    FROM cte2
         LEFT JOIN sns_metrics s_ly
-            ON cte.gl_product_group = s_ly.gl_product_group
-            AND cte.event_name = s_ly.event_name
-            AND cte.event_year - 1 = s_ly.event_year
-        LEFT JOIN pm_sandbox_aqxiao.ntb_gl_level ly
-            ON cte.gl_product_group = ly.gl_product_group
-            AND cte.event_name = ly.event_name
-            AND cte.event_year - 1 = ly.event_year
+            ON cte2.gl_product_group = s_ly.gl_product_group
+            AND cte2.event_name = s_ly.event_name
+            AND cte2.event_year - 1 = s_ly.event_year
+        LEFT JOIN cte2 ly
+            ON cte2.gl_product_group = ly.gl_product_group
+            AND cte2.event_name = ly.event_name
+            AND cte2.event_year - 1 = ly.event_year
 );
+
+
 
 
 -- 5. Event Level Analysis
 DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_event_level;
 CREATE TABLE pm_sandbox_aqxiao.ntb_event_level AS (
-    with cte as (
-        SELECT
-            -- Base Event info
+    WITH cte AS (
+        SELECT 
+            -- event info
             d.event_name,
             d.event_year,
             d.event_duration_days,
-
             -- Deal Period Metrics
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END) as deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days as daily_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END) as deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days as daily_deal_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END) as deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days as daily_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END) as deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days as daily_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days as daily_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days as daily_deal_return_customers,
-            SUM(s.avg_deal_sns_subscribers) as daily_deal_sns_subscribers,
-            
+            avg(s.avg_deal_sns_subscribers) as daily_deal_sns_subscribers_gl,
+            SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days as daily_deal_shipped_units_gl,
+            SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days as daily_deal_revenue_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days as daily_deal_customers_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days as daily_deal_new_customers_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days as daily_deal_return_customers_gl,
+
             -- Pre-Deal Period Metrics
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END) as pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91 as daily_pre_deal_shipped_units,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END) as pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91 as daily_pre_deal_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END) as pre_deal_subscription_revenue,
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91 as daily_pre_deal_subscription_revenue,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END) as pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END) as pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END) as pre_deal_return_customers,
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers,
+            avg(s.avg_pre_deal_sns_subscribers) as daily_pre_deal_sns_subscribers_gl,
+            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91 as daily_pre_deal_shipped_units_gl,
+            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91 as daily_pre_deal_revenue_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91 as daily_pre_deal_customers_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91 as daily_pre_deal_new_customers_gl,
+            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91 as daily_pre_deal_return_customers_gl
             
-            -- sns
-            SUM(s.avg_pre_deal_sns_subscribers) as daily_pre_deal_sns_subscribers,
-
-            -- Add delta calculations
-            (SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN shipped_units END)/91) as delta_daily_shipped_units,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN revenue_share_amt END)/91) as delta_daily_revenue,
-            (SUM(CASE WHEN period_type = 'DEAL' THEN subscription_revenue_amt END)/d.event_duration_days - 
-            SUM(CASE WHEN period_type = 'PRE_DEAL' THEN subscription_revenue_amt END)/91) as delta_daily_subscription_revenue,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' THEN customer_id END)/91) as delta_daily_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 1 THEN customer_id END)/91) as delta_daily_new_customers,
-            (COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/d.event_duration_days - 
-            COUNT(DISTINCT CASE WHEN period_type = 'PRE_DEAL' AND is_first_brand_purchase = 0 THEN customer_id END)/91) as delta_daily_return_customers,
-            (SUM(s.avg_deal_sns_subscribers) - SUM(s.avg_pre_deal_sns_subscribers)) as delta_daily_sns_subscribers
-
         FROM combined_data d
             LEFT JOIN sns_metrics s
-                ON d.asin = s.asin
+                ON d.gl_product_group = s.gl_product_group
                 AND d.event_name = s.event_name
                 AND s.event_year = d.event_year
-
+        WHERE d.gl_product_group IS NOT NULL
         GROUP BY 
             d.event_name,
             d.event_year,
             d.event_duration_days
+    ),
+
+    cte2 as (
+        SELECT 
+            cte.*,
+            -- Add delta calculations
+            daily_deal_shipped_units_event - daily_pre_deal_shipped_units_event as delta_daily_shipped_units_event,
+            daily_deal_revenue_event - daily_pre_deal_revenue_event as delta_daily_revenue_event,
+            daily_deal_customers_event - daily_pre_deal_customers_event as delta_daily_customers_event,
+            daily_deal_new_customers_event - daily_pre_deal_new_customers_event as delta_daily_new_customers_event,
+            daily_deal_return_customers_event - daily_pre_deal_return_customers_event as delta_daily_return_customers_event,
+            daily_deal_sns_subscribers_event - daily_pre_deal_sns_subscribers_event as delta_daily_sns_subscribers_event
+        FROM cte
     )
 
-    select 
-        cte.*,
-        -- Last year metrics
+    SELECT 
+        cte2.*,
         -- deal
-        ly.daily_deal_shipped_units as ly_daily_deal_shipped_units,
-        ly.daily_deal_revenue as ly_daily_deal_revenue,
-        ly.daily_deal_subscription_revenue as ly_daily_deal_subscription_revenue,
-        ly.daily_deal_customers as ly_daily_deal_customers,
-        ly.daily_deal_new_customers as ly_daily_deal_new_customers,
-        ly.daily_deal_return_customers as ly_daily_deal_return_customers,
+        ly.daily_deal_shipped_units_event as ly_daily_deal_shipped_units_event,
+        ly.daily_deal_revenue_event as ly_daily_deal_revenue_event,
+        ly.daily_deal_customers_event as ly_daily_deal_customers_event,
+        ly.daily_deal_new_customers_event as ly_daily_deal_new_customers_event,
+        ly.daily_deal_return_customers_event as ly_daily_deal_return_customers_event,
+        ly.deal_asin_count_event as ly_deal_asin_count_event,
+        ly.deal_brand_count_event as ly_deal_brand_count_event,
+        ly.deal_company_count_event as ly_deal_company_count_event,
+        ly.deal_gl_count_event as ly_deal_gl_count_event,
         -- pre deal
-        ly.daily_pre_deal_shipped_units as ly_daily_pre_deal_shipped_units,
-        ly.daily_pre_deal_revenue as ly_daily_pre_deal_revenue,
-        ly.daily_pre_deal_subscription_revenue as ly_daily_pre_deal_subscription_revenue,
-        ly.daily_pre_deal_customers as ly_daily_pre_deal_customers,
-        ly.daily_pre_deal_new_customers as ly_daily_pre_deal_new_customers,
-        ly.daily_pre_deal_return_customers as ly_daily_pre_deal_return_customers,
-        -- sns
-        s_ly.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers,
-        s_ly.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers,
-        -- Last year delta calculations
-        ly.delta_daily_shipped_units as ly_delta_daily_shipped_units,
-        ly.delta_daily_revenue as ly_delta_daily_revenue,
-        ly.delta_daily_subscription_revenue as ly_delta_daily_subscription_revenue,
-        ly.delta_daily_customers as ly_delta_daily_customers,
-        ly.delta_daily_new_customers as ly_delta_daily_new_customers,
-        ly.delta_daily_return_customers as ly_delta_daily_return_customers,
-        (s_ly.avg_deal_sns_subscribers - s_ly.avg_pre_deal_sns_subscribers) as ly_delta_daily_sns_subscribers
-
-    from cte
+        ly.daily_pre_deal_shipped_units_event as ly_daily_pre_deal_shipped_units_event,
+        ly.daily_pre_deal_revenue_event as ly_daily_pre_deal_revenue_event,
+        ly.daily_pre_deal_customers_event as ly_daily_pre_deal_customers_event,
+        ly.daily_pre_deal_new_customers_event as ly_daily_pre_deal_new_customers_event,
+        ly.daily_pre_deal_return_customers_event as ly_daily_pre_deal_return_customers_event,
+        -- sns        
+        s_ly.avg_deal_sns_subscribers as ly_daily_deal_sns_subscribers_event,
+        s_ly.avg_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers_event
+    FROM cte2
         LEFT JOIN sns_metrics s_ly
-            ON cte.event_name = s_ly.event_name
-            AND cte.event_year - 1 = s_ly.event_year
-        LEFT JOIN pm_sandbox_aqxiao.ntb_event_level ly
-            ON cte.event_name = ly.event_name
-            AND cte.event_year - 1 = ly.event_year
+            ON cte2.event_name = s_ly.event_name
+            AND cte2.event_year - 1 = s_ly.event_year
+        LEFT JOIN cte2 ly
+            ON cte2.event_name = ly.event_name
+            AND cte2.event_year - 1 = ly.event_year
 );
+
 
 -- Grant permissions for all tables
 GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_asin_level TO PUBLIC;
