@@ -230,7 +230,7 @@ CREATE TEMP TABLE consolidated_promos AS (
 /*************************
 SNS Metrics - daily aggregations
 *************************/
--- 1. First get deal period SNS data
+-- 1.1 First get deal period SNS data
 DROP TABLE IF EXISTS deal_period_sns;
 CREATE TEMP TABLE deal_period_sns AS (
     SELECT 
@@ -251,7 +251,7 @@ CREATE TEMP TABLE deal_period_sns AS (
         p.event_year
 );
 
--- 2. Get pre-deal period SNS data
+-- 1.2 Get pre-deal period SNS data
 DROP TABLE IF EXISTS pre_deal_period_sns;
 CREATE TEMP TABLE pre_deal_period_sns AS (
     SELECT 
@@ -273,7 +273,7 @@ CREATE TEMP TABLE pre_deal_period_sns AS (
         p.event_year
 );
 
--- 3. Combine deal and pre-deal SNS data
+-- 1.3 Combine deal and pre-deal SNS data
 DROP TABLE IF EXISTS base_sns_avg;
 CREATE TEMP TABLE base_sns_avg AS (
     SELECT 

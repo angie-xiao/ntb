@@ -600,7 +600,7 @@ CREATE TEMP TABLE deal_growth AS (
             AND d.promo_start_date = s.promo_start_date
         LEFT JOIN andes.roi_ml_ddl.VENDOR_COMPANY_CODES v
             ON v.vendor_code = d.vendor_code
-
+    
     WHERE d.promo_start_date IS NOT NULL
     ORDER BY 
         d.promo_start_date DESC,
