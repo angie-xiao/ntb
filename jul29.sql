@@ -245,9 +245,11 @@ CREATE TEMP TABLE deal_base AS (
 /*************************
 Create unified base table combining orders and metrics
 *************************/
-DROP TABLE IF EXISTS unified_daily_metrics;
-CREATE TEMP TABLE unified_daily_metrics AS (
+DROP TABLE IF EXISTS unified_deal_base;
+CREATE TEMP TABLE unified_deal_base AS (
+    
     SELECT 
+    
         -- Deal context
         d.asin,
         d.event_name,
@@ -262,7 +264,7 @@ CREATE TEMP TABLE unified_daily_metrics AS (
         d.event_duration_days,
         
         -- Order date
-        b.order_date,
+        b.order_date as ship_day,
         
         -- Period identifier
         CASE 
@@ -285,13 +287,12 @@ CREATE TEMP TABLE unified_daily_metrics AS (
         b.customer_shipment_item_id,
         b.shipped_units,
         b.revenue_share_amt,
-        b.is_first_brand_purchase,
         COALESCE(s.daily_sns_subscribers, 0) as daily_sns_subscribers
 
     FROM deal_base d
         INNER JOIN base_orders b 
             ON d.asin = b.asin
-            AND b.order_date BETWEEN d.pre_deal_start_date AND d.deal_end_date  -- covers both periods
+            AND b.order_date BETWEEN d.pre_deal_start_date AND d.deal_end_date
         LEFT JOIN daily_sns_metrics s
             ON b.asin = s.asin
             AND b.order_date = s.metric_date
@@ -311,7 +312,7 @@ CREATE TEMP TABLE asin_first_purchases AS (
         customer_id,
         asin,
         MIN(ship_day) as first_purchase_date
-    FROM unified_daily_metrics
+    FROM unified_deal_base
     WHERE asin IS NOT NULL
     GROUP BY customer_id, asin
 );
@@ -324,7 +325,7 @@ CREATE TEMP TABLE brand_first_purchases AS (
         customer_id,
         brand_code,
         MIN(ship_day) as first_brand_purchase_date
-    FROM unified_daily_metrics
+    FROM unified_deal_base
     WHERE brand_code IS NOT NULL
     GROUP BY customer_id, brand_code
 );
@@ -337,7 +338,7 @@ CREATE TEMP TABLE company_first_purchases AS (
         company_code,
         gl_product_group, -- Including GL because we need company-GL combination
         MIN(ship_day) as first_company_gl_purchase_date
-    FROM unified_daily_metrics
+    FROM unified_deal_base
     WHERE company_code IS NOT NULL
     GROUP BY customer_id, company_code, gl_product_group
 );
@@ -349,11 +350,49 @@ CREATE TEMP TABLE gl_first_purchases AS (
         customer_id,
         gl_product_group,
         MIN(ship_day) as first_gl_purchase_date
-    FROM unified_daily_metrics
+    FROM unified_deal_base
     WHERE gl_product_group IS NOT NULL
     GROUP BY customer_id, gl_product_group
 );
 
+
+DROP TABLE IF EXISTS unified_daily_metrics;
+CREATE TEMP TABLE unified_daily_metrics AS (
+
+    SELECT 
+        udm.*,
+        CASE 
+            WHEN udm.ship_day = afp.first_purchase_date THEN 1 
+            ELSE 0 
+        END as is_first_asin_purchase,
+        CASE 
+            WHEN udm.ship_day = bfp.first_brand_purchase_date THEN 1 
+            ELSE 0 
+        END as is_first_brand_purchase,
+        CASE 
+            WHEN udm.ship_day = cfp.first_company_gl_purchase_date THEN 1 
+            ELSE 0 
+        END as is_first_company_purchase,
+        CASE 
+            WHEN udm.ship_day = gfp.first_gl_purchase_date THEN 1 
+            ELSE 0 
+        END as is_first_gl_purchase
+    FROM unified_deal_base udm
+        LEFT JOIN asin_first_purchases afp
+            ON udm.customer_id = afp.customer_id
+            AND udm.asin = afp.asin
+        LEFT JOIN brand_first_purchases bfp
+            ON udm.customer_id = bfp.customer_id
+            AND udm.brand_code = bfp.brand_code
+        LEFT JOIN company_first_purchases cfp
+            ON udm.customer_id = cfp.customer_id
+            AND udm.company_code = cfp.company_code
+            AND udm.gl_product_group = cfp.gl_product_group
+        LEFT JOIN gl_first_purchases gfp
+            ON udm.customer_id = gfp.customer_id
+            AND udm.gl_product_group = gfp.gl_product_group
+
+);
 
 ---------------------------------------- ASIN LEVEL ----------------------------------------
 
@@ -364,66 +403,67 @@ DROP TABLE IF EXISTS deal_metrics;
 CREATE TEMP TABLE deal_metrics AS (
     SELECT 
         -- Group by columns for desired level (e.g., ASIN level shown here)
-        asin,
-        item_name,
-        gl_product_group,
-        gl_product_group_name,
-        brand_code,
-        brand_name,
-        vendor_code,
-        company_code,
-        company_name,
-        event_name,
-        event_year,
-        promo_start_date,
-        promo_end_date,
-        event_month,
-        event_duration_days,
-        
+        udm.asin,           -- Specify we want asin from unified_daily_metrics
+        udm.item_name,
+        udm.gl_product_group,
+        udm.gl_product_group_name,
+        udm.brand_code,
+        udm.brand_name,
+        udm.vendor_code,
+        udm.company_code,
+        udm.company_name,
+        udm.event_name,
+        udm.event_year,
+        udm.promo_start_date,
+        udm.promo_end_date,
+        udm.event_month,
+        udm.event_duration_days,
+          
         -- Deal period metrics
-        SUM(CASE WHEN period_type = 'DEAL' THEN shipped_units END)/event_duration_days as daily_deal_shipped_units,
-        SUM(CASE WHEN period_type = 'DEAL' THEN revenue_share_amt END)/event_duration_days as daily_deal_ops,
-        COUNT(DISTINCT CASE WHEN period_type = 'DEAL' THEN customer_id END)/event_duration_days as daily_deal_customers,
-
-
+        SUM(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.shipped_units END)/udm.event_duration_days as daily_deal_shipped_units,
+        SUM(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.revenue_share_amt END)/udm.event_duration_days as daily_deal_ops, 
+            
         -- total customers
         COUNT(DISTINCT CASE 
-            WHEN period_type = 'DEAL' 
+            WHEN udm.period_type = 'DEAL' 
             THEN udm.customer_id 
-        END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_customers,
+        END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_customers,
 
         -- new customers
         COUNT(DISTINCT CASE 
-            WHEN period_type = 'DEAL' 
-            AND udm.ship_day = afp.first_brand_purchase_date -- This is the key change
+            WHEN udm.period_type = 'DEAL' 
+            AND udm.ship_day = afp.first_purchase_date
             THEN udm.customer_id 
-        END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_new_customers,
+        END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_new_customers,
 
-        AVG(CASE WHEN period_type = 'DEAL' THEN daily_sns_subscribers END) as daily_deal_sns_subscribers
+        AVG(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.daily_sns_subscribers END) as daily_deal_sns_subscribers
         
     FROM unified_daily_metrics udm
-
         LEFT JOIN asin_first_purchases afp
             ON udm.customer_id = afp.customer_id
             AND udm.asin = afp.asin  
-        
+
     GROUP BY
-        asin,
-        item_name,
-        gl_product_group,
-        gl_product_group_name,
-        brand_code,
-        brand_name,
-        vendor_code,
-        company_code,
-        company_name,
-        event_name,
-        event_year,
-        promo_start_date,
-        promo_end_date,
-        event_month,
-        event_duration_days
+        udm.asin,
+        udm.item_name,
+        udm.gl_product_group,
+        udm.gl_product_group_name,
+        udm.brand_code,
+        udm.brand_name,
+        udm.vendor_code,
+        udm.company_code,
+        udm.company_name,
+        udm.event_name,
+        udm.event_year,
+        udm.promo_start_date,
+        udm.promo_end_date,
+        udm.event_month,
+        udm.event_duration_days
 );
+
 
 /*************************
 Pre-Deal Period Metrics
@@ -470,7 +510,7 @@ CREATE TEMP TABLE deal_growth AS (
         (d.daily_deal_ops - p.daily_pre_deal_ops) as delta_daily_ops,
         (d.daily_deal_customers - p.daily_pre_deal_customers) as delta_daily_customers,
         (d.daily_deal_new_customers - p.daily_pre_deal_new_customers) as delta_daily_new_customers,
-        (d.daily_deal_sns_subscribers - p.daily_ly_pre_deal_sns_subscribers) as delta_daily_sns_subscribers
+        (d.daily_deal_sns_subscribers - p.daily_pre_deal_sns_subscribers) as delta_daily_sns_subscribers  -- Fixed this line
     
     FROM deal_metrics d
         LEFT JOIN pre_deal_metrics p
@@ -478,6 +518,7 @@ CREATE TEMP TABLE deal_growth AS (
             AND d.event_name = p.event_name
             AND d.event_year = p.event_year
 );
+
 
 /*************************
 Add Last Year Comparisons
@@ -572,62 +613,62 @@ Brand Level Metrics (Corrected)
 DROP TABLE IF EXISTS deal_metrics_brand;
 CREATE TEMP TABLE deal_metrics_brand AS (
     SELECT 
-        brand_code,
-        brand_name,
-        vendor_code,
-        company_code,
-        company_name,
-        gl_product_group,
-        gl_product_group_name,
-        event_name,
-        event_year,
-        event_month,
-        MIN(promo_start_date) as promo_start_date,
-        MAX(promo_end_date) as promo_end_date,
-        MAX(promo_end_date) - MIN(promo_start_date) + 1 as event_duration_days,
+        udm.brand_code,
+        udm.brand_name,
+        udm.vendor_code,
+        udm.company_code,
+        udm.company_name,
+        udm.gl_product_group,
+        udm.gl_product_group_name,
+        udm.event_name,
+        udm.event_year,
+        udm.event_month,
+        MIN(udm.promo_start_date) as promo_start_date,
+        MAX(udm.promo_end_date) as promo_end_date,
+        MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1 as event_duration_days,
         
         -- Deal period metrics - proper daily averages at brand level
-        SUM(CASE WHEN period_type = 'DEAL' 
-            THEN shipped_units END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_shipped_units,
-        SUM(CASE WHEN period_type = 'DEAL' 
-            THEN revenue_share_amt END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_ops,
+        SUM(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.shipped_units END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_shipped_units,
+        SUM(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.revenue_share_amt END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_ops,
        
        -- total customers
         COUNT(DISTINCT CASE 
-            WHEN period_type = 'DEAL' 
+            WHEN udm.period_type = 'DEAL' 
             THEN udm.customer_id 
-        END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_customers,
+        END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_customers,
 
         -- new customers
         COUNT(DISTINCT CASE 
-            WHEN period_type = 'DEAL' 
-            AND udm.ship_day = bfp.first_brand_purchase_date -- This is the key change
+            WHEN udm.period_type = 'DEAL' 
+            AND udm.ship_day = bfp.first_brand_purchase_date
             THEN udm.customer_id 
-        END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_new_customers
+        END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_new_customers,
 
-
-        AVG(CASE WHEN period_type = 'DEAL' 
-            THEN daily_sns_subscribers END) as daily_deal_sns_subscribers
+        AVG(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.daily_sns_subscribers END) as daily_deal_sns_subscribers
 
     FROM unified_daily_metrics udm
-        left join brand_first_purchases bfp
+        LEFT JOIN brand_first_purchases bfp
             ON udm.customer_id = bfp.customer_id
             AND udm.brand_code = bfp.brand_code 
 
-    WHERE brand_code IS NOT NULL
+    WHERE udm.brand_code IS NOT NULL
 
     GROUP BY 
-        brand_code,
-        brand_name,
-        vendor_code,
-        company_code,
-        company_name,
-        gl_product_group,
-        gl_product_group_name,
-        event_name,
-        event_year,
-        event_month
+        udm.brand_code,
+        udm.brand_name,
+        udm.vendor_code,
+        udm.company_code,
+        udm.company_name,
+        udm.gl_product_group,
+        udm.gl_product_group_name,
+        udm.event_name,
+        udm.event_year,
+        udm.event_month
 );
+
 
 -- Pre-deal period metrics for brand
 DROP TABLE IF EXISTS pre_deal_metrics_brand;
@@ -636,7 +677,6 @@ CREATE TEMP TABLE pre_deal_metrics_brand AS (
         brand_code,
         event_name,
         event_year,
-        COUNT(DISTINCT asin) as participating_asins_pre_deal,
         
         -- Pre-deal period metrics - always 91 days
         SUM(CASE WHEN period_type = 'PRE_DEAL' 
@@ -664,7 +704,6 @@ DROP TABLE IF EXISTS deal_growth_brand;
 CREATE TEMP TABLE deal_growth_brand AS (
     SELECT 
         d.*,
-        p.participating_asins_pre_deal,
         p.daily_pre_deal_shipped_units,
         p.daily_pre_deal_ops,
         p.daily_pre_deal_customers,
@@ -776,48 +815,63 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_brand_level AS (
         daily_deal_ops DESC
 );
 
+
 ---------------------------------------- COMPANY-GL LEVEL ----------------------------------------
 
-/*************************
-Company-GL Level Metrics
-*************************/
 DROP TABLE IF EXISTS deal_metrics_company;
 CREATE TEMP TABLE deal_metrics_company AS (
     SELECT 
-        company_code,
-        company_name,
-        gl_product_group,
-        gl_product_group_name,
-        event_name,
-        event_year,
-        event_month,
-        MIN(promo_start_date) as promo_start_date,
-        MAX(promo_end_date) as promo_end_date,
-        MAX(promo_end_date) - MIN(promo_start_date) + 1 as event_duration_days,
+        udm.company_code,
+        udm.company_name,
+        udm.gl_product_group,
+        udm.gl_product_group_name,
+        udm.event_name,
+        udm.event_year,
+        udm.event_month,
+        MIN(udm.promo_start_date) as promo_start_date,
+        MAX(udm.promo_end_date) as promo_end_date,
+        MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1 as event_duration_days,
         
-        -- Deal period metrics - proper daily averages at company-GL level
-        SUM(CASE WHEN period_type = 'DEAL' 
-            THEN shipped_units END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_shipped_units,
-        SUM(CASE WHEN period_type = 'DEAL' 
-            THEN revenue_share_amt END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_ops,
-        COUNT(DISTINCT CASE WHEN period_type = 'DEAL' 
-            THEN customer_id END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_customers,
-        COUNT(DISTINCT CASE WHEN period_type = 'DEAL' AND is_first_brand_purchase = 1 
-            THEN customer_id END)/(MAX(promo_end_date) - MIN(promo_start_date) + 1) as daily_deal_new_customers,
-        AVG(CASE WHEN period_type = 'DEAL' 
-            THEN daily_sns_subscribers END) as daily_deal_sns_subscribers
+        -- Deal period metrics - proper daily averages at company level
+        SUM(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.shipped_units END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_shipped_units,
+        SUM(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.revenue_share_amt END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_ops,
+       
+        -- total customers
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'DEAL' 
+            THEN udm.customer_id 
+        END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_customers,
 
-    FROM unified_daily_metrics
-    WHERE company_code IS NOT NULL
+        -- new customers (using company_first_purchases)
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'DEAL' 
+            AND udm.ship_day = cfp.first_company_gl_purchase_date
+            THEN udm.customer_id 
+        END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_new_customers,
+
+        AVG(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.daily_sns_subscribers END) as daily_deal_sns_subscribers
+
+    FROM unified_daily_metrics udm
+        LEFT JOIN company_first_purchases cfp
+            ON udm.customer_id = cfp.customer_id
+            AND udm.company_code = cfp.company_code
+            AND udm.gl_product_group = cfp.gl_product_group
+
+    WHERE udm.company_code IS NOT NULL
+
     GROUP BY 
-        company_code,
-        company_name,
-        gl_product_group,
-        gl_product_group_name,
-        event_name,
-        event_year,
-        event_month
+        udm.company_code,
+        udm.company_name,
+        udm.gl_product_group,
+        udm.gl_product_group_name,
+        udm.event_name,
+        udm.event_year,
+        udm.event_month
 );
+
 
 -- Pre-deal period metrics for company-GL
 DROP TABLE IF EXISTS pre_deal_metrics_company;
@@ -858,7 +912,6 @@ DROP TABLE IF EXISTS deal_growth_company;
 CREATE TEMP TABLE deal_growth_company AS (
     SELECT 
         d.*,
-        p.participating_asins_pre_deal,
         p.daily_pre_deal_shipped_units,
         p.daily_pre_deal_ops,
         p.daily_pre_deal_customers,
@@ -1155,6 +1208,6 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_gl_level AS (
 -- Grant permissions for all tables
 GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_asin_level TO PUBLIC;
 GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_brand_level TO PUBLIC;
--- GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_company_level TO PUBLIC;
--- GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_gl_level TO PUBLIC;
+GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_company_level TO PUBLIC;
+GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_gl_level TO PUBLIC;
 -- GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_event_level TO PUBLIC;
