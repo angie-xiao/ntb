@@ -1,5 +1,4 @@
---+ merchant_sku in booker.d_mp_merchant_sku_asin_map
--- no need to have brand level metrics???
+--ly_delta_daily_new_customers (company level)
 
 /*************************
 Base Orders Query
