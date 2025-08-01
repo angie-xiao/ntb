@@ -214,15 +214,13 @@ CREATE TEMP TABLE event_standards AS (
         SELECT 
             event_name,
             DATE_PART('year', promo_start_date) as event_year,
-            DATE_PART('month', promo_start_date) as event_month,
             promo_start_date,
             promo_end_date,
             COUNT(*) as frequency,
-            -- Rank by frequency
+            -- Rank by frequency - removed month from partition
             ROW_NUMBER() OVER (
                 PARTITION BY event_name, 
-                DATE_PART('year', promo_start_date), 
-                DATE_PART('month', promo_start_date)
+                DATE_PART('year', promo_start_date)
                 ORDER BY COUNT(*) DESC
             ) as rn
         FROM promotion_details
@@ -230,14 +228,13 @@ CREATE TEMP TABLE event_standards AS (
         GROUP BY 
             event_name,
             DATE_PART('year', promo_start_date),
-            DATE_PART('month', promo_start_date),
             promo_start_date,
             promo_end_date
     )
     SELECT 
         event_name,
         event_year,
-        event_month,
+        DATE_PART('month', promo_start_date) as event_month,  -- derived from the most common start date
         promo_start_date,
         promo_end_date,
         frequency
@@ -253,8 +250,9 @@ CREATE TEMP TABLE consolidated_promos AS (
         p.asin,
         p.customer_shipment_item_id,
         p.event_name,
-        DATE_PART('year', COALESCE(e.promo_start_date, p.promo_start_date)) as event_year,
-        DATE_PART('month', COALESCE(e.promo_start_date, p.promo_start_date)) as event_month,
+        DATE_PART('year', p.promo_start_date) as event_year,
+        -- Use the standard event month for consistency
+        COALESCE(e.event_month, DATE_PART('month', p.promo_start_date)) as event_month,
         -- Use standard dates if they exist, otherwise use original dates
         COALESCE(e.promo_start_date, p.promo_start_date) as promo_start_date,
         COALESCE(e.promo_end_date, p.promo_end_date) as promo_end_date
@@ -262,10 +260,8 @@ CREATE TEMP TABLE consolidated_promos AS (
     LEFT JOIN event_standards e
         ON p.event_name = e.event_name
         AND DATE_PART('year', p.promo_start_date) = e.event_year
-        AND DATE_PART('month', p.promo_start_date) = e.event_month
     WHERE p.event_name != 'NO_PROMOTION'
 );
-
 
 
 /*************************
