@@ -1,1 +1,10 @@
 *.tsv
+
+# ignore excel
+*.xlsx
+
+# ignore csv
+*.csv
+
+# ignore codee workspace
+.code-workspace
