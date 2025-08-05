@@ -1,4 +1,3 @@
--- directionally more right. but overcounting
 
 /*************************
 Base Orders Query
@@ -199,7 +198,6 @@ CREATE TEMP TABLE raw_events AS  (
 
 /**********************************************************************
 Classifies promotions into major event types
-
 https://w.amazon.com/bin/view/Canada_Marketing/Events/2025_Events/
 **********************************************************************/
 
@@ -351,7 +349,6 @@ CREATE TEMP TABLE deal_base AS (
 );
 
 
-
 /*************************
 deal_base + sns
 *************************/
@@ -488,7 +485,7 @@ CREATE TEMP TABLE customer_first_purchases AS (
 -- flag if first purchase for asin/brand/company/gl levels
 DROP TABLE IF EXISTS unified_daily_metrics;
 CREATE TEMP TABLE unified_daily_metrics AS (
-    SELECT 
+    SELECT DISTINCT 
         udm.*,
         -- ASIN level: first purchase if no purchases before period AND purchase is within period
         CASE WHEN udm.period_type = 'DEAL' 
@@ -779,10 +776,6 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin_level AS (
         event_name,
         daily_deal_ops DESC
 );
-
-
-
-
 
 
 ---------------------------------------- BRAND LEVEL --------------------------------------- 
