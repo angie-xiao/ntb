@@ -62,6 +62,7 @@ CREATE TEMP TABLE base_orders AS (
 
 /*************************
 SNS Metrics - daily aggregations
+-- andes.subs_save_ddl.D_SNS_COI_ATTRIBUTES (for later ref)
 *************************/
 DROP TABLE IF EXISTS daily_sns_metrics;
 CREATE TEMP TABLE daily_sns_metrics AS (
@@ -70,7 +71,8 @@ CREATE TEMP TABLE daily_sns_metrics AS (
         TO_DATE(snapshot_date, 'YYYY-MM-DD') as metric_date,
         AVG(active_subscription_count) as daily_sns_subscribers
     FROM andes.subs_save_ddl.d_daily_active_sns_asin_detail
-    WHERE marketplace_id = 7
+    WHERE region_id = 1
+        AND marketplace_id = 7
         AND gl_product_group IN (510, 364, 325, 199, 194, 121, 75)
         AND TO_DATE(snapshot_date, 'YYYY-MM-DD') >= TO_DATE('{RUN_DATE_YYYY-MM-DD}', 'YYYY-MM-DD') - interval '730 days' -- 730 days
     GROUP BY 
@@ -577,7 +579,10 @@ CREATE TEMP TABLE deal_metrics AS (
         MAX(udm.promo_end_date) as promo_end_date,
         MAX(udm.event_duration_days) as event_duration_days,
         
-        -- Deal period metrics
+        -- asin count
+        count(distinct udm.asin) as deal_unique_asin_ct,
+
+        -- Topline
         SUM(CASE WHEN udm.period_type = 'DEAL' 
             THEN udm.shipped_units END)/MAX(udm.event_duration_days) as daily_deal_shipped_units,
         SUM(CASE WHEN udm.period_type = 'DEAL' 
@@ -685,6 +690,7 @@ CREATE TEMP TABLE final_asin_metrics AS (
     SELECT
         t1.*,
         -- Last Year Metrics
+        t2.deal_unique_asin_ct as ly_unique_asin_ct,
         t2.daily_deal_shipped_units as ly_daily_deal_shipped_units,
         t2.daily_deal_ops as ly_daily_deal_ops,
         t2.daily_deal_customers as ly_daily_deal_customers,
@@ -698,9 +704,9 @@ CREATE TEMP TABLE final_asin_metrics AS (
         
     FROM deal_growth t1
         LEFT JOIN deal_growth t2
-            ON t1.asin = t2.asin
-            AND t1.event_name = t2.event_name
-            AND t1.event_year - 1 = t2.event_year
+        ON t1.asin = t2.asin
+        AND t1.event_name = t2.event_name
+        AND t1.event_year - 1 = t2.event_year
 );
 
 /*************************
@@ -722,6 +728,8 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin_level AS (
         cast(event_month as varchar) as event_month,
         event_duration_days,
         
+        deal_unique_asin_ct,
+
         -- Current Year Deal Period Metrics
         daily_deal_shipped_units,
         daily_deal_ops,
@@ -755,19 +763,15 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_asin_level AS (
         ly_daily_pre_deal_new_customers,
         ly_daily_pre_deal_sns_subscribers,
 
+        -- asin count
+        ly_unique_asin_ct,
+        
         -- Last Year Delta Metrics
         (ly_daily_deal_shipped_units - ly_daily_pre_deal_shipped_units) as ly_delta_daily_shipped_units,
         (ly_daily_deal_ops - ly_daily_pre_deal_ops) as ly_delta_daily_ops,
         (ly_daily_deal_customers - ly_daily_pre_deal_customers) as ly_delta_daily_customers,
         (ly_daily_deal_new_customers - ly_daily_pre_deal_new_customers) as ly_delta_daily_new_customers,
-        (ly_daily_deal_sns_subscribers - ly_daily_pre_deal_sns_subscribers) as ly_delta_daily_sns_subscribers,
-
-        -- Year-over-Year Delta Comparisons
-        (delta_daily_shipped_units - (ly_daily_deal_shipped_units - ly_daily_pre_deal_shipped_units)) as yoy_delta_daily_shipped_units,
-        (delta_daily_ops - (ly_daily_deal_ops - ly_daily_pre_deal_ops)) as yoy_delta_daily_ops,
-        (delta_daily_customers - (ly_daily_deal_customers - ly_daily_pre_deal_customers)) as yoy_delta_daily_customers,
-        (delta_daily_new_customers - (ly_daily_deal_new_customers - ly_daily_pre_deal_new_customers)) as yoy_delta_daily_new_customers,
-        (delta_daily_sns_subscribers - (ly_daily_deal_sns_subscribers - ly_daily_pre_deal_sns_subscribers)) as yoy_delta_daily_sns_subscribers
+        (ly_daily_deal_sns_subscribers - ly_daily_pre_deal_sns_subscribers) as ly_delta_daily_sns_subscribers
 
     FROM final_asin_metrics
     
@@ -955,8 +959,8 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_brand_level AS (
         gl_product_group,
         gl_product_group_name,
         event_name,
-        event_year,
-        event_month,
+        CAST(event_year AS VARCHAR) as event_year,
+        CAST(event_month AS VARCHAR) as event_month,
         promo_start_date,
         promo_end_date,
         event_duration_days,
@@ -999,14 +1003,14 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_brand_level AS (
         COALESCE(ly_daily_deal_ops, 0) - COALESCE(ly_daily_pre_deal_ops, 0) as ly_delta_daily_ops,
         COALESCE(ly_daily_deal_customers, 0) - COALESCE(ly_daily_pre_deal_customers, 0) as ly_delta_daily_customers,
         COALESCE(ly_daily_deal_new_customers, 0) - COALESCE(ly_daily_pre_deal_new_customers, 0) as ly_delta_daily_new_customers,
-        COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0) as ly_delta_daily_sns_subscribers,
+        COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0) as ly_delta_daily_sns_subscribers
 
-        -- Year-over-Year Delta Comparisons
-        COALESCE(delta_daily_shipped_units, 0) - (COALESCE(ly_daily_deal_shipped_units, 0) - COALESCE(ly_daily_pre_deal_shipped_units, 0)) as yoy_delta_daily_shipped_units,
-        COALESCE(delta_daily_ops, 0) - (COALESCE(ly_daily_deal_ops, 0) - COALESCE(ly_daily_pre_deal_ops, 0)) as yoy_delta_daily_ops,
-        COALESCE(delta_daily_customers, 0) - (COALESCE(ly_daily_deal_customers, 0) - COALESCE(ly_daily_pre_deal_customers, 0)) as yoy_delta_daily_customers,
-        COALESCE(delta_daily_new_customers, 0) - (COALESCE(ly_daily_deal_new_customers, 0) - COALESCE(ly_daily_pre_deal_new_customers, 0)) as yoy_delta_daily_new_customers,
-        COALESCE(delta_daily_sns_subscribers, 0) - (COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0)) as yoy_delta_daily_sns_subscribers
+        -- -- Year-over-Year Delta Comparisons
+        -- COALESCE(delta_daily_shipped_units, 0) - (COALESCE(ly_daily_deal_shipped_units, 0) - COALESCE(ly_daily_pre_deal_shipped_units, 0)) as yoy_delta_daily_shipped_units,
+        -- COALESCE(delta_daily_ops, 0) - (COALESCE(ly_daily_deal_ops, 0) - COALESCE(ly_daily_pre_deal_ops, 0)) as yoy_delta_daily_ops,
+        -- COALESCE(delta_daily_customers, 0) - (COALESCE(ly_daily_deal_customers, 0) - COALESCE(ly_daily_pre_deal_customers, 0)) as yoy_delta_daily_customers,
+        -- COALESCE(delta_daily_new_customers, 0) - (COALESCE(ly_daily_deal_new_customers, 0) - COALESCE(ly_daily_pre_deal_new_customers, 0)) as yoy_delta_daily_new_customers,
+        -- COALESCE(delta_daily_sns_subscribers, 0) - (COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0)) as yoy_delta_daily_sns_subscribers
 
     FROM final_brand_metrics
     ORDER BY 
@@ -1187,8 +1191,8 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_company_level AS (
         gl_product_group,
         gl_product_group_name,
         event_name,
-        event_year,
-        event_month,
+        CAST(event_year AS VARCHAR) as event_year,
+        CAST(event_month AS VARCHAR) as event_month,
         promo_start_date,
         promo_end_date,
         event_duration_days,
@@ -1231,14 +1235,7 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_company_level AS (
         COALESCE(ly_daily_deal_ops, 0) - COALESCE(ly_daily_pre_deal_ops, 0) as ly_delta_daily_ops,
         COALESCE(ly_daily_deal_customers, 0) - COALESCE(ly_daily_pre_deal_customers, 0) as ly_delta_daily_customers,
         COALESCE(ly_daily_deal_new_customers, 0) - COALESCE(ly_daily_pre_deal_new_customers, 0) as ly_delta_daily_new_customers,
-        COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0) as ly_delta_daily_sns_subscribers,
-
-        -- Year-over-Year Delta Comparisons
-        COALESCE(delta_daily_shipped_units, 0) - (COALESCE(ly_daily_deal_shipped_units, 0) - COALESCE(ly_daily_pre_deal_shipped_units, 0)) as yoy_delta_daily_shipped_units,
-        COALESCE(delta_daily_ops, 0) - (COALESCE(ly_daily_deal_ops, 0) - COALESCE(ly_daily_pre_deal_ops, 0)) as yoy_delta_daily_ops,
-        COALESCE(delta_daily_customers, 0) - (COALESCE(ly_daily_deal_customers, 0) - COALESCE(ly_daily_pre_deal_customers, 0)) as yoy_delta_daily_customers,
-        COALESCE(delta_daily_new_customers, 0) - (COALESCE(ly_daily_deal_new_customers, 0) - COALESCE(ly_daily_pre_deal_new_customers, 0)) as yoy_delta_daily_new_customers,
-        COALESCE(delta_daily_sns_subscribers, 0) - (COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0)) as yoy_delta_daily_sns_subscribers
+        COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0) as ly_delta_daily_sns_subscribers
 
     FROM final_company_metrics
     ORDER BY 
@@ -1248,7 +1245,7 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_company_level AS (
 );
 
 
--------------------------------- GL LEVELS ----------------------------------------
+-------------------------------- GL LEVEL ----------------------------------------
 
 DROP TABLE IF EXISTS deal_gls;
 CREATE TEMP TABLE deal_gls AS (
@@ -1406,10 +1403,8 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_gl_level AS (
         gl_product_group,
         gl_product_group_name,
         event_name,
-        event_year,
-        event_month,
-        -- promo_start_date,
-        -- promo_end_date,
+        CAST(event_year AS VARCHAR) AS event_year,
+        CAST(event_month AS VARCHAR) AS event_month,
         event_duration_days,
         
         -- Current Year Deal Period Metrics
@@ -1450,14 +1445,14 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_gl_level AS (
         COALESCE(ly_daily_deal_ops, 0) - COALESCE(ly_daily_pre_deal_ops, 0) as ly_delta_daily_ops,
         COALESCE(ly_daily_deal_customers, 0) - COALESCE(ly_daily_pre_deal_customers, 0) as ly_delta_daily_customers,
         COALESCE(ly_daily_deal_new_customers, 0) - COALESCE(ly_daily_pre_deal_new_customers, 0) as ly_delta_daily_new_customers,
-        COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0) as ly_delta_daily_sns_subscribers,
+        COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0) as ly_delta_daily_sns_subscribers
 
-        -- Year-over-Year Delta Comparisons
-        COALESCE(delta_daily_shipped_units, 0) - (COALESCE(ly_daily_deal_shipped_units, 0) - COALESCE(ly_daily_pre_deal_shipped_units, 0)) as yoy_delta_daily_shipped_units,
-        COALESCE(delta_daily_ops, 0) - (COALESCE(ly_daily_deal_ops, 0) - COALESCE(ly_daily_pre_deal_ops, 0)) as yoy_delta_daily_ops,
-        COALESCE(delta_daily_customers, 0) - (COALESCE(ly_daily_deal_customers, 0) - COALESCE(ly_daily_pre_deal_customers, 0)) as yoy_delta_daily_customers,
-        COALESCE(delta_daily_new_customers, 0) - (COALESCE(ly_daily_deal_new_customers, 0) - COALESCE(ly_daily_pre_deal_new_customers, 0)) as yoy_delta_daily_new_customers,
-        COALESCE(delta_daily_sns_subscribers, 0) - (COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0)) as yoy_delta_daily_sns_subscribers
+        -- -- Year-over-Year Delta Comparisons
+        -- COALESCE(delta_daily_shipped_units, 0) - (COALESCE(ly_daily_deal_shipped_units, 0) - COALESCE(ly_daily_pre_deal_shipped_units, 0)) as yoy_delta_daily_shipped_units,
+        -- COALESCE(delta_daily_ops, 0) - (COALESCE(ly_daily_deal_ops, 0) - COALESCE(ly_daily_pre_deal_ops, 0)) as yoy_delta_daily_ops,
+        -- COALESCE(delta_daily_customers, 0) - (COALESCE(ly_daily_deal_customers, 0) - COALESCE(ly_daily_pre_deal_customers, 0)) as yoy_delta_daily_customers,
+        -- COALESCE(delta_daily_new_customers, 0) - (COALESCE(ly_daily_deal_new_customers, 0) - COALESCE(ly_daily_pre_deal_new_customers, 0)) as yoy_delta_daily_new_customers,
+        -- COALESCE(delta_daily_sns_subscribers, 0) - (COALESCE(ly_daily_deal_sns_subscribers, 0) - COALESCE(ly_daily_pre_deal_sns_subscribers, 0)) as yoy_delta_daily_sns_subscribers
 
     FROM final_gl_metrics
     ORDER BY 
@@ -1466,9 +1461,240 @@ CREATE TABLE pm_sandbox_aqxiao.ntb_gl_level AS (
         daily_deal_ops DESC
 );
 
+
+-------------------------------- EVENT LEVEL ----------------------------------------
+
+/*************************
+Event Level Metrics
+*************************/
+DROP TABLE IF EXISTS deal_metrics_event;
+CREATE TEMP TABLE deal_metrics_event AS (
+    SELECT 
+        udm.event_name,
+        udm.event_year,
+        udm.event_month,
+        MIN(udm.promo_start_date) as promo_start_date,
+        MAX(udm.promo_end_date) as promo_end_date,
+        MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1 as event_duration_days,
+        
+        -- Count of unique ASINs in deal
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'DEAL' 
+            THEN udm.asin 
+        END) as unique_asin_count,
+        
+        -- Count of unique brands in deal
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'DEAL' 
+            THEN udm.brand_code 
+        END) as unique_brand_count,
+        
+        -- Count of unique companies in deal
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'DEAL' 
+            THEN udm.company_code 
+        END) as unique_company_count,
+        
+        -- Deal period metrics
+        SUM(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.shipped_units END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_shipped_units,
+        SUM(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.revenue_share_amt END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_ops,
+        
+        -- Total customers
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'DEAL' 
+            THEN udm.customer_id 
+        END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_customers,
+        
+        -- New customers (across all levels)
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'DEAL' AND 
+                (udm.is_first_asin_purchase = 1 OR 
+                 udm.is_first_brand_purchase = 1 OR
+                 udm.is_first_company_purchase = 1 OR 
+                 udm.is_first_gl_purchase = 1)
+            THEN udm.customer_id 
+        END)/(MAX(udm.promo_end_date) - MIN(udm.promo_start_date) + 1) as daily_deal_new_customers,
+
+        -- SNS subscribers
+        AVG(CASE WHEN udm.period_type = 'DEAL' 
+            THEN udm.daily_sns_subscribers END) as daily_deal_sns_subscribers
+            
+    FROM unified_daily_metrics udm
+    GROUP BY 
+        udm.event_name,
+        udm.event_year,
+        udm.event_month
+);
+
+/*************************
+Pre-Deal Event Level Metrics
+*************************/
+DROP TABLE IF EXISTS pre_deal_metrics_event;
+CREATE TEMP TABLE pre_deal_metrics_event AS (
+    SELECT 
+        udm.event_name,
+        udm.event_year,
+        
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'PRE_DEAL' 
+            THEN udm.asin 
+        END) as pre_deal_unique_asin_count,
+        
+        SUM(CASE WHEN udm.period_type = 'PRE_DEAL' 
+            THEN shipped_units END)/29 as daily_pre_deal_shipped_units,
+        SUM(CASE WHEN udm.period_type = 'PRE_DEAL' 
+            THEN revenue_share_amt END)/29.0 as daily_pre_deal_ops,
+        
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'PRE_DEAL' 
+            THEN udm.customer_id 
+        END)/29 as daily_pre_deal_customers,
+        
+        COUNT(DISTINCT CASE 
+            WHEN udm.period_type = 'PRE_DEAL' AND 
+                (udm.is_first_asin_purchase = 1 OR 
+                 udm.is_first_brand_purchase = 1 OR
+                 udm.is_first_company_purchase = 1 OR 
+                 udm.is_first_gl_purchase = 1)
+            THEN udm.customer_id 
+        END)/29 as daily_pre_deal_new_customers,
+        
+        AVG(CASE WHEN udm.period_type = 'PRE_DEAL' 
+            THEN daily_sns_subscribers END) as daily_pre_deal_sns_subscribers
+            
+    FROM unified_daily_metrics udm
+    GROUP BY 1,2
+);
+
+/*************************
+Combine & Calculate Event Level Deltas
+*************************/
+DROP TABLE IF EXISTS deal_growth_event;
+CREATE TEMP TABLE deal_growth_event AS (
+    SELECT 
+        d.*,
+        p.pre_deal_unique_asin_count,
+        p.daily_pre_deal_shipped_units,
+        p.daily_pre_deal_ops,
+        p.daily_pre_deal_customers,
+        p.daily_pre_deal_new_customers,
+        p.daily_pre_deal_sns_subscribers,
+        
+        -- Delta calculations
+        (d.daily_deal_shipped_units - p.daily_pre_deal_shipped_units) as delta_daily_shipped_units,
+        (d.daily_deal_ops - p.daily_pre_deal_ops) as delta_daily_ops,
+        (d.daily_deal_customers - p.daily_pre_deal_customers) as delta_daily_customers,
+        (d.daily_deal_new_customers - p.daily_pre_deal_new_customers) as delta_daily_new_customers,
+        (d.daily_deal_sns_subscribers - p.daily_pre_deal_sns_subscribers) as delta_daily_sns_subscribers
+    
+    FROM deal_metrics_event d
+        LEFT JOIN pre_deal_metrics_event p
+            ON d.event_name = p.event_name
+            AND d.event_year = p.event_year
+);
+
+/*************************
+Calculate Last Year Event Level Metrics
+*************************/
+DROP TABLE IF EXISTS final_event_metrics;
+CREATE TEMP TABLE final_event_metrics AS (
+    SELECT
+        t1.*,
+        -- Last Year Metrics
+        t2.unique_asin_count as ly_unique_asin_count,
+        t2.unique_brand_count as ly_unique_brand_count,
+        t2.unique_company_count as ly_unique_company_count,
+        t2.daily_deal_shipped_units as ly_daily_deal_shipped_units,
+        t2.daily_deal_ops as ly_daily_deal_ops,
+        t2.daily_deal_customers as ly_daily_deal_customers,
+        t2.daily_deal_new_customers as ly_daily_deal_new_customers,
+        t2.daily_deal_sns_subscribers as ly_daily_deal_sns_subscribers,
+        t2.daily_pre_deal_shipped_units as ly_daily_pre_deal_shipped_units,
+        t2.daily_pre_deal_ops as ly_daily_pre_deal_ops,
+        t2.daily_pre_deal_customers as ly_daily_pre_deal_customers,
+        t2.daily_pre_deal_new_customers as ly_daily_pre_deal_new_customers,
+        t2.daily_pre_deal_sns_subscribers as ly_daily_pre_deal_sns_subscribers
+    FROM deal_growth_event t1
+        LEFT JOIN deal_growth_event t2
+            ON t1.event_name = t2.event_name
+            AND t1.event_year - 1 = t2.event_year
+);
+
+/*************************
+Create Final Event Level Output Table
+*************************/
+DROP TABLE IF EXISTS pm_sandbox_aqxiao.ntb_event_level;
+CREATE TABLE pm_sandbox_aqxiao.ntb_event_level AS (
+    SELECT 
+        event_name,
+        CAST(event_year AS VARCHAR) as event_year,
+        CAST(event_month AS VARCHAR) as event_month,
+        promo_start_date,
+        promo_end_date,
+        event_duration_days,
+        
+        -- Participation metrics
+        unique_asin_count,
+        unique_brand_count,
+        unique_company_count,
+        
+        -- Current Year Deal Period Metrics
+        daily_deal_shipped_units,
+        daily_deal_ops,
+        daily_deal_customers,
+        daily_deal_new_customers,
+        daily_deal_sns_subscribers,
+        
+        -- Current Year Pre-Deal Period Metrics
+        pre_deal_unique_asin_count,
+        daily_pre_deal_shipped_units,
+        daily_pre_deal_ops,
+        daily_pre_deal_customers,
+        daily_pre_deal_new_customers,
+        daily_pre_deal_sns_subscribers,
+        
+        -- Current Year Delta Metrics
+        delta_daily_shipped_units,
+        delta_daily_ops,
+        delta_daily_customers,
+        delta_daily_new_customers,
+        delta_daily_sns_subscribers,
+        
+        -- Last Year Metrics
+        ly_unique_asin_count,
+        ly_unique_brand_count,
+        ly_unique_company_count,
+        ly_daily_deal_shipped_units,
+        ly_daily_deal_ops,
+        ly_daily_deal_customers,
+        ly_daily_deal_new_customers,
+        ly_daily_deal_sns_subscribers,
+        ly_daily_pre_deal_shipped_units,
+        ly_daily_pre_deal_ops,
+        ly_daily_pre_deal_customers,
+        ly_daily_pre_deal_new_customers,
+        ly_daily_pre_deal_sns_subscribers,
+
+        -- Last Year Delta Metrics
+        (ly_daily_deal_shipped_units - ly_daily_pre_deal_shipped_units) as ly_delta_daily_shipped_units,
+        (ly_daily_deal_ops - ly_daily_pre_deal_ops) as ly_delta_daily_ops,
+        (ly_daily_deal_customers - ly_daily_pre_deal_customers) as ly_delta_daily_customers,
+        (ly_daily_deal_new_customers - ly_daily_pre_deal_new_customers) as ly_delta_daily_new_customers,
+        (ly_daily_deal_sns_subscribers - ly_daily_pre_deal_sns_subscribers) as ly_delta_daily_sns_subscribers
+
+    FROM final_event_metrics
+    ORDER BY 
+        event_year DESC,
+        event_name,
+        daily_deal_ops DESC
+);
+
+
 -- Grant permissions for all tables
 GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_asin_level TO PUBLIC;
 GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_brand_level TO PUBLIC;
 GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_company_level TO PUBLIC;
 GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_gl_level TO PUBLIC;
--- GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_event_level TO PUBLIC;
+GRANT ALL ON TABLE pm_sandbox_aqxiao.ntb_event_level TO PUBLIC;
